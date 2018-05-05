@@ -13,7 +13,7 @@
 # occur and correct these in the genomic sequence, enabling reannotation to occur.
 
 # Load packages
-import re, os, argparse, copy, pickle, warnings
+import re, os, argparse, copy, pickle, warnings, shutil
 from Bio import SeqIO
 from Bio.Seq import Seq
 from Bio.Alphabet import generic_dna
@@ -122,7 +122,7 @@ def indel_location(transcriptAlign, genomeAlign, matchStart, model, startIndex, 
         for x in range(len(transcriptAlign)):
                 genomeIndex = matchStart + startIndex + x                                               # This will correspond to the genomic contig index [note that we add startIndex to match[0] because we may have trimmed some of the 5' sequence during SW alignment]
                 pair = transcriptAlign[x] + genomeAlign[x]                                              # Note that these are 1-based (it's helpful for me to manually validate code behaviour), so we'll need to account for this behaviour later
-                if 'n' in pair or 'N' in pair or pair[0] == pair[1]:                                    # Need to handle single N in the transcripts. We won't use this for any editing and we'll count it as identical for the purpose of identity calculation.
+                if pair[0] == pair[1]:
                         identical += 1
                 elif pair[0] == '-':
                         if model[2] not in tmpVcf:
@@ -138,7 +138,7 @@ def indel_location(transcriptAlign, genomeAlign, matchStart, model, startIndex, 
         pctIdentity = (identical / len(transcriptAlign)) * 100
         if pctIdentity >= minCutoff:
                 # Merge the temporary vcf into the main one
-                inputVcf = vcf_merge(inputVcf, tmpVcf)                                                  # If our pctIdentity isn't good enough we make no changes to the inputVcf since this isn't a good enough alignment to trust
+                inputVcf = vcf_merge(inputVcf, tmpVcf)                                                  # If our pctIdentity isn't good enough we make no changes to the inputVcf
         return inputVcf, pctIdentity, tmpVcf                                                            # Return our tmpVcf just for logging purposes
 
 def vcf_edit(tmpVcf, contigID, coordRange):
@@ -208,7 +208,6 @@ def vcf_merge(vcf1, vcf2):                                                      
                                         value2[k2] = v2
         # Delete any conflicting indel locations
         for i in range(len(delKeys)):
-                print('Deleting ' + delContigs[i] + ' - ' + str(delKeys[i]))
                 del vcf1[delContigs[i]][delKeys[i]]
                 # Clean up any empty dictionary keys
                 if vcf1[delContigs[i]] == {}:
@@ -229,7 +228,7 @@ def vcf_output(outFileName, vcf, comment):
                                 fileOut.write('\t'.join([key, str(pair[0]), str(pair[1][0])]) + '\n')
 
 def translate_cds(seq1, seq2):
-        # Translate into ORFs and grab the longest bits
+        # Translate into ORFs and grab the longest bits inbetween stop codons
         records = [Seq(seq1, generic_dna), Seq(seq2, generic_dna)]
         longest = ['','']
         for i in range(len(records)):
@@ -373,16 +372,49 @@ def cdna_parser(gffFile):                                                       
                         nuclDict[mrna[0]] = [mrna[1], mrna[3], mrna[2], mrna[0]]
         return nuclDict
 
+def validate_args(args):
+        # Validate input file locations
+        if not os.path.isfile(args.gff3File):
+                print('I am unable to locate the input gff3 gene annotation file (' + args.gff3File + ')')
+                print('Make sure you\'ve typed the file name or location correctly and try again.')
+                quit()
+        elif not os.path.isfile(args.genomeFile):
+                print('I am unable to locate the input genome fasta file (' + args.genomeFile + ')')
+                print('Make sure you\'ve typed the file name or location correctly and try again.')
+                quit()
+        elif not os.path.isfile(args.gmapFile):
+                print('I am unable to locate the input GMAP transcript alignment gff3 file (' + args.gmapFile + ')')
+                print('Make sure you\'ve typed the file name or location correctly and try again.')
+                quit()
+        elif not os.path.isfile(args.transcriptomeFile):
+                print('I am unable to locate the input transcriptome fasta file (' + args.transcriptomeFile + ')')
+                print('Make sure you\'ve typed the file name or location correctly and try again.')
+                quit()
+        # Handle file overwrites
+        tmpFileName = None
+        if os.path.isfile(args.outputFileName):
+                if args.force:
+                        # Temporarily move the file to the current directory and delete the file at the end of program run - this acts as a safety mechanism if someone actually ends up not wanting to overwrite the output file
+                        tmpFileName = file_name_gen('DEGRIT_backup', '_' + os.path.basename(args.outputFileName))
+                        shutil.move(args.outputFileName, tmpFileName)                                   # I'm going to do this before I alert the user since they might immediately cause a KeyboardInterrupt and I don't know what happens if you do this during shutil.move()
+                        print('You\'ve specified that you want to overwrite ' + args.outputFileName)
+                        print('Is that right? I\'m going to rename this file to "' + tmpFileName + '" and hold onto the file in the current directory until this program exits.')
+                        print('If you don\'t want to delete this file, kill this process and you can retrieve the file.')
+                else:
+                        print(args.outputFileName + ' already exists. Either provide the -fo argument to this program or delete/move/rename this file and run the program again.')
+                        quit()
+        return tmpFileName
+
 ## Functions for optional arguments
-def log_file_name_gen(prefix):
+def file_name_gen(prefix, suffix):
         ongoingCount = 2
         while True:
-                if not os.path.isfile(prefix + '_run1.log'):
-                        return prefix + '_run1.log'
-                elif os.path.isfile(prefix + '_run' + str(ongoingCount) + '.log'):
+                if not os.path.isfile(prefix + '1' + suffix):
+                        return prefix + '1' + suffix
+                elif os.path.isfile(prefix + str(ongoingCount) + suffix):
                         ongoingCount += 1
                 else:
-                        return prefix + '_run' + str(ongoingCount) + '.log'
+                        return prefix + str(ongoingCount) + suffix
 
 def trans_pos(sswResult):                                                                               # Function designed for assisting the logging process by providing transcript start - stop positions
         transcriptRecord = copy.deepcopy(transRecords[sswResult[7]])
@@ -449,8 +481,6 @@ def novel_gmap_align_finder(gmapLoc, nuclDict, minCutoff):
         # Compare gmapLoc values to nuclRanges values to find GMAP alignments which don't overlap known genes
         validExons = []
         for key, value in gmapLoc.items():
-                if value[0][7] != 'utg781_pilon_pilon':        ## TESTING
-                        continue
                 gmapHits = copy.deepcopy(value)
                 # Cull any hits that aren't good enough                                                 # It's important that we're as strict (or more) as we are with the established gene model checking
                 for x in range(len(gmapHits)-1,-1,-1):
@@ -516,85 +546,75 @@ requires a gff3 file of gene annotations alongside its respective genome fasta f
 of transcript alignments with its respective transcriptome fasta file. These files will be used to compare the
 genome sequence to the aligned transcript sequence to identify any occurrences of indel errors. By correcting these
 indels, reannotation of gene models can take place which will provide more accurate results.
+Note: This program is designed to work with CDS regions from transcripts; this reduces the chance of falsely 
+interrupting a reading frame with an edit. You can predict the CDS region using TransDecoder or EvidentialGene.
 """
 # Reqs
 p = argparse.ArgumentParser(description=usage)
 
-p.add_argument("-gff", "-gff3", dest="gff3File",
+p.add_argument("-an", "--annotation", dest="gff3File",
                help="Input gff3 gene annotation file name")
-p.add_argument("-gen", "-genomefile", dest="genomeFile",
+p.add_argument("-gen", "--genomefile", dest="genomeFile",
                help="Input genome contig fasta file name")
-p.add_argument("-gm", "-gmap", dest="gmapFile",
+p.add_argument("-gm", "--gmap", dest="gmapFile",
                help="Input gff3 gmap transcript alignment file name")
-p.add_argument("-tr", "-transfile", dest="transcriptomeFile",
+p.add_argument("-tr", "--transfile", dest="transcriptomeFile",
                help="Input nucleotide transcriptome fasta file name (this is the same transcript file used for GMAP alignment)")
-p.add_argument("-o", "-output", dest="outputFileName",
+p.add_argument("-o", "--output", dest="outputFileName",
                help="Output results file name")
 # Opts
-p.add_argument('-r', '-rescue_genes', dest="rescue_genes", action='store_true',
-               help="Optionally perform extended gene model rescue module [although false positive risk may slightly be higher, this is recommended]", default=True)
-p.add_argument("-fo", "-force", dest="force", action='store_true',
-               help="Optionally allow the program overwrite existing files at your own risk.", default=False
-p.add_argument('-v', '-verbose', dest="verbose", action='store_true',
-               help="Print program details to terminal", default=True)
-p.add_argument('-l', '-log', dest="log", action='store_true',
-               help="Additionally produce a detailed logging file as output", default=True)
+p.add_argument('-r', '--rescue_genes', dest="rescue_genes", action='store_true',
+               help="Optionally perform extended gene model rescue module (this is recommended)", default=False)
+p.add_argument("-fo", "--force", dest="force", action='store_true',
+               help="Optionally allow the program overwrite existing files at your own risk", default=False)
+p.add_argument('-v', '--verbose', dest="verbose", action='store_true',
+               help="Print program details to terminal", default=False)
+p.add_argument('-l', '--log', dest="log", action='store_true',
+               help="Additionally produce a detailed logging file as output", default=False)
 
 args = p.parse_args()
 
-# Hard coded for testing
-args.genomeFile = r'/home/lythl/Desktop/gene_model_patch/cal_smrtden.ar4.pil2.fasta'
-args.gff3File = r'/home/lythl/Desktop/gene_model_patch/cal_smart.rnam-trna.final.sorted.gff3'
-args.transcriptomeFile = r'/home/lythl/Desktop/gene_model_patch/cal_smart_transcriptome.okay-okalt.cds'
-args.gmapFile = r'/home/lythl/Desktop/gene_model_patch/cal_smart_cds.gmap.spliced_alignments.gff3'
-args.outputFileName = 'testing_out.txt'
+# Validate arguments and get log file name
+tmpFileName = validate_args(args)
+logName = file_name_gen('DEGRIT_' + os.path.basename(args.genomeFile).rsplit('.', maxsplit=1)[0] + '_run', '.log')
 
-pickleName = 'patching_pickle.pkl'
-#pickleName = None
-if pickleName == None:
-        # Load genome file as a dictionary
-        genomeRecords = SeqIO.to_dict(SeqIO.parse(open(args.genomeFile, 'rU'), 'fasta'))
-        print('Loaded genome fasta file')
+# Load genome file as a dictionary
+genomeRecords = SeqIO.to_dict(SeqIO.parse(open(args.genomeFile, 'rU'), 'fasta'))
+verbose_print(args, 'Loaded genome fasta file')
 
-        # Parse the gff3 file
-        nuclDict = cdna_parser(args.gff3File)
-        print('Parsed the annotations gff3 file')
+# Parse the gff3 file
+nuclDict = cdna_parser(args.gff3File)
+verbose_print(args, 'Parsed the annotations gff3 file')
 
-        # Parse the gmap alignment file for transcript alignment locations
-        gmapLoc = gmap_parse_ranges(args.gmapFile)
-        print('Parsed GMAP gff3 file')
+# Parse the gmap alignment file for transcript alignment locations
+gmapLoc = gmap_parse_ranges(args.gmapFile)
+verbose_print(args, 'Parsed GMAP gff3 file')
 
-        # Parse the transcriptome file
-        transRecords = SeqIO.to_dict(SeqIO.parse(open(args.transcriptomeFile, 'rU'), 'fasta'))
-        print('Loaded transcriptome fasta file')
+# Parse the transcriptome file
+transRecords = SeqIO.to_dict(SeqIO.parse(open(args.transcriptomeFile, 'rU'), 'fasta'))
+verbose_print(args, 'Loaded transcriptome fasta file')
 
-        with open('patching_pickle.pkl', 'wb') as pickleOut:
-                pickle.dump([genomeRecords, nuclDict, gmapLoc, transRecords], pickleOut)
-else:
-        with open(pickleName, 'rb') as pickleIn:
-                genomeRecords, nuclDict,  gmapLoc, transRecords = pickle.load(pickleIn)
-        print('Loaded values in')
 
-### CORE PROCESS
-minCutoff = 98                                                                                          # Up for modification / making visible to the user
+# Declare values needed for processing
+minCutoff = 98                                                                                          # I don't think this value should be modifiable - the program is built around this value, increasing it will result in finding very few results, and decreasing it will likely result in false changes
 gmapCutoff = 95
-"""I have two values here since [in the case of utg103.12], my gmap_curate function was too strict. 
-Since we're checking for exon skipping now (wasn't part of the original plan but it is important)
-it's essential that we are absolutely certain the real gene model has a skipped exon, and the best
+"""I have two values here since, in a testing scenario, my gmap_curate function was too strict. 
+Since we're checking for exon skipping now (wasn't part of the original plan but it is useful)
+we want to see if there is any transcript support for the exon at all for the purpose of
+providing validation information in the form of gene length increases/decreases, and the best
 way to do that is to lower our gmapCutoff to see if something similar to the real exon is part of the real
-gene model or not. 
+gene model or not, but still use our strict cutoff for making any indel modifications.
 
 Additionally, I am pretty sure I found a case where GMAP's identity score was noted as 97%
-but in reality it was 100% identical. I've noticed a handful of weird things GMAP does (hence why I align my
-genomic patch against the whole transcript, GMAP's coordinates aren't trustworthy..) so I try to limit my trust in the
-program's accuracy."""
-vcfDict = {}                                                                                            # This dictionary will hold onto values in a style that is consistent with VCF, making output and parsing easier
+but in reality it was 100% identical. I've noticed a handful of weird things GMAP does (hence why I 
+align my genomic exon segment against the whole transcript, GMAP's coordinates aren't trustworthy..)
+so I try to limit my trust in the program's accuracy."""
+vcfDict = {}                                                                                            # This dictionary will hold onto values in a style that is similar to VCF, making output and parsing easier
 geneBlocks = {}                                                                                         # This dictionary serves as a form of validation. By holding onto model starts/stops, we'll be able to check for overlap which will tell us if gene models will end up merged in the reannotation.
-logName = log_file_name_gen('DEGRIT_' + os.path.basename(args.genomeFile).rsplit('.', maxsplit=1)[0])
 
+### CORE PROCESS
+verbose_print(args, '### Main gene improvement module start ###')
 for key, model in nuclDict.items():
-        if not 'utg781' in key: ## Testing
-                continue
         # Hold onto both the original gene model, as well as the new gene model resulting from indel correction/exon boundary modification
         origModelCoords = []
         newModelCoords = []
@@ -654,7 +674,7 @@ for key, model in nuclDict.items():
                                 newModelCoords.append(model[0][i])                                      # Like above after gmap_curate, there is transcript support for this exon. Here, we chose not to make any changes, so we'll stick to the original coordinates.
                                 # Log
                                 log_update(args, logName, [key, model, i, sswResults, '.', 'hit'])
-        # Validate the indel positions
+        # Hold onto any indel positions and provide logging information about this
         if modelVcf == {}:
                 geneBlocks = geneblocks_update(geneBlocks, model, origModelCoords)
                 # Verbose and log
@@ -765,5 +785,9 @@ if args.rescue_genes:
                                 rescue_log_update(args, logName, [match[7], sswResults, firstVcf])
         # Output to VCF
         vcf_output(args.outputFileName, novelVcf, '# Gene rescue module indel predictions')
+
+# Remove the output file that was being replaced if relevant
+if tmpFileName != None:
+        os.remove(tmpFileName)
 
 #### SCRIPT ALL DONE
