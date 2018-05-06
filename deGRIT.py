@@ -52,12 +52,18 @@ def gmap_exon_finder(gmapLoc, model, coordIndex, processType):
                         outList.append(subentry)
         # Extra processing if looking at first and last exons
         if processType == 'boundary':
-                # Narrow down this list further to make sure we're only holding onto perfect boundary matches
+                encompass = []
+                exact = []
+                # Narrow down this list further to make sure we're only holding onto perfect boundary matches OR fully encompassing matches
                 for n in range(len(outList)-1, -1, -1):
                         if outList[n][0] == start or outList[n][1] == stop:
-                                continue
-                        else:
-                                del outList[n]
+                                exact.append(outList[n])
+                        elif outList[n][0] <= start and outList[n][1] >= stop:                          # This wasn't previously in the program, but it was noticed that boundary and internal handling was too different and causing problems. This should help to equalise their behaviour for the most part.
+                                encompass.append(outList[n])
+                if exact != []:
+                        outList = exact                                                                 # This results in us prioritising exact matches, but allowing encompassing matches to be accepted if we find no exact matches. This was needed to handle a few scenarios.
+                else:
+                        outList = encompass
         # Sort and return list
         outList.sort(key = lambda x: (int(x[6]), x[2] - x[1]), reverse = True)                          # Provides a sorted list where, at the top, we have the longest and best matching hits.
         return outList
@@ -243,6 +249,28 @@ def vcf_output(outFileName, vcf, comment):
                         value.sort()
                         for pair in value:
                                 fileOut.write('\t'.join([key, str(pair[0]), str(pair[1][0])]) + '\n')
+
+def vcf_clean(vcf, model):
+        if model[2] in vcf:                                                                                     # We don't need to clean anything if there are no entries associated with this contig yet
+                # Figure out our current model's range
+                firstCoord = model[0][0].split('-')
+                lastCoord =  model[0][-1].split('-')
+                if model[1] == '+':
+                        start = int(firstCoord[0])
+                        stop = int(lastCoord[1])
+                else:
+                        stop = int(firstCoord[1])
+                        start = int(lastCoord[0])
+                modelRange = range(start, stop + 1)                                                             # Make the range 1-based
+                # Remove any vcf positions that are part of the present model range
+                vcfVals = vcf[model[2]]
+                ovlIndices = [index for index in vcfVals if index in modelRange]
+                for index in ovlIndices:
+                        del vcfVals[index]
+                # Clean up any empty dictionary keys
+                if vcf[model[2]] == {}:
+                        del vcf[model[2]]
+        return vcf
 
 def translate_cds(seq1, seq2):
         # Translate into ORFs and grab the longest bits inbetween stop codons
@@ -637,12 +665,15 @@ align my genomic exon segment against the whole transcript, GMAP's coordinates a
 so I try to limit my trust in the program's accuracy."""
 vcfDict = {}                                                                                            # This dictionary will hold onto values in a style that is similar to VCF, making output and parsing easier.
 geneBlocks = {}                                                                                         # This dictionary serves as a form of validation. By holding onto model starts/stops, we'll be able to check for overlap which will tell us if gene models will end up merged in the reannotation.
-
+prevBestResult = ''                                                                                     # This will let us remember our previous best match and, if it's also present in the next exon's gmapMatches, we just skip this exon. This will reduce the chance of small differences of opinion ruining gene models.
+                                                                                                        # It's worth noting that we also want to hold this value across genes, hence why I want to declare a blank value before we start our core loop.
 ### CORE PROCESS
 verbose_print(args, '### Main gene improvement module start ###')
 for key, model in nuclDict.items():
         if 'utg0_pilon_pilon' not in key: ## TESTING
                 continue
+        # VCF dictionary correction - remove any changes made to this gene model by others (this will reduce the chance of correcting the same genomic sequence with two different transcripts with differences of opinion)
+        vcfDict = vcf_clean(vcfDict, model)
         # Hold onto both the original gene model, as well as the new gene model resulting from indel correction/exon boundary modification
         origModelCoords = []
         newModelCoords = []
@@ -690,29 +721,36 @@ for key, model in nuclDict.items():
                         # Log
                         log_update(args, logName, [key, model, i, sswResults, '.', 'hit'])
                 else:
-                        # Loop through our sswResults and find an alignment that isn't discarded (i.e., if sswIdentity == 0 we discarded the alignment, find the first one that isn't this)
-                        if len(sswResults) == 1:                                                        # Change our cutoff to reflect different levels of support (only 1 alignment is more suspect, multiple alignments means the best hit has a high chance of actually originating here).
+                        # Change our cutoff to reflect different levels of support (only 1 alignment is more suspect, multiple alignments means the best hit has a high chance of actually originating here)
+                        if len(sswResults) == 1:
                                 tmpCutoff = 98
                         else:
                                 tmpCutoff = minCutoff                                                   # Technically I could just declare the cutoff to use within this part and not before this loop begins, but I think it helps to understand the decision making process of this program.
+                        # Loop through our sswResults and find any good alignments
+                        acceptedResults = []
                         for j in range(len(sswResults)):
                                 sswIdentity, tmpVcf = indel_location(sswResults[j][0], sswResults[j][1], sswResults[j][5], model, sswResults[j][3])     # This will update our vcfDict with indel locations
-                                if sswIdentity == 0 and j != len(sswResults) - 1:                       # This means we'll skip the current result if it was discarded and if we're not looking at the very last result. If it's the last result and it was discarded, then we just go through to the next part for logging purposes.
-                                        continue
-                                # Modify our modelVcf if the alignment is trustworthy
                                 if sswIdentity >= tmpCutoff:
-                                        modelVcf = vcf_merge(modelVcf, tmpVcf)
-                                        origModelCoords.append(model[0][i])
-                                        newModelCoords.append(str(sswResults[j][5]) + '-' + str(sswResults[j][6]))
-                                        # Log
-                                        log_update(args, logName, [key, model, i, sswResults, tmpVcf, 'hit'])
-                                        break
-                                else:
-                                        origModelCoords.append(model[0][i])
-                                        newModelCoords.append(model[0][i])                                      # Like above after gmap_curate, there is transcript support for this exon. Here, we chose not to make any changes, so we'll stick to the original coordinates.
-                                        # Log
-                                        log_update(args, logName, [key, model, i, sswResults, '.', 'hit'])
-                                        break
+                                        acceptedResults.append([sswIdentity, tmpVcf, sswResults[j]])
+                        # End checking if no results are trustworthy
+                        if acceptedResults == []:
+                                origModelCoords.append(model[0][i])
+                                newModelCoords.append(model[0][i])                                      # Like above after gmap_curate, there is transcript support for this exon. Here, we chose not to make any changes, so we'll stick to the original coordinates.
+                                # Log
+                                log_update(args, logName, [key, model, i, sswResults, '.', 'hit'])
+                        else:
+                                # Check to see if one of these results is identical to the accepted one from the last exon
+                                sswIdentity, tmpVcf, result = acceptedResults[0]                                # Hold onto the best result and overwrite these values if we find the result used for the previous exon.
+                                for l in range(len(acceptedResults)):
+                                        if acceptedResults[l] == prevBestResult:
+                                                sswIdentity, tmpVcf, result = prevBestResult
+                                # Modify our modelVcf
+                                modelVcf = vcf_merge(modelVcf, tmpVcf)
+                                origModelCoords.append(model[0][i])
+                                newModelCoords.append(str(result[5]) + '-' + str(result[6]))
+                                prevBestResult = [sswIdentity, tmpVcf, result]
+                                # Log
+                                log_update(args, logName, [key, model, i, [result], tmpVcf, 'hit'])             # Put result into a list since our logging function expects a list of lists, for which it retrieves the first entry                            
                                 
         # Hold onto any indel positions and provide logging information about this
         if modelVcf == {}:
