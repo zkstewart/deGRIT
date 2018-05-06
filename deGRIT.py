@@ -110,7 +110,7 @@ def ssw(genomePatchRec, transcriptRecord):
                 hyphen = 'y'
         return [transcriptAlign, genomeAlign, hyphen, startIndex, alignment.optimal_alignment_score]
 
-def indel_location(transcriptAlign, genomeAlign, matchStart, model, startIndex, minCutoff):             # This function will check hyphens in the transcript (== deletions in the genome) and hyphens in the genome (== insertion from the transcript).
+def indel_location(transcriptAlign, genomeAlign, matchStart, model, startIndex):             # This function will check hyphens in the transcript (== deletions in the genome) and hyphens in the genome (== insertion from the transcript).
         # Check if this is likely to be worth bothering
         badChars = ['---', 'n']
         for char in badChars:                                                                           # This is a rough metric, but gap opens larger than three make us wonder whether this transcript does actually originate from the alignment position (maybe it's a paralogue?); in almost all cases, a real indel has a length of one.
@@ -154,7 +154,7 @@ def vcf_edit(tmpVcf, contigID, coordRange):
                         genomeSeq = genomeSeq[:indelIndex] + genomeSeq[indelIndex+1:]                   # Since pair[0] and coordRange are 1-based, minusing these results in an index that is, essentially, 0-based.
                 else:
                         genomeSeq = genomeSeq[:indelIndex] + pair[1] + genomeSeq[indelIndex:]           # Because of this, we +1 to the second bit to skip the indelIndex, and leave this neutral to simply insert a base at the indel index.
-        return genomeSeq
+        return genomeSeq    
 
 def cds_build(origCoords, newCoords, contigID, orientation, tmpVcf):
         # Build the original gene model
@@ -165,13 +165,33 @@ def cds_build(origCoords, newCoords, contigID, orientation, tmpVcf):
                 if orientation == '-':
                         cdsBit = reverse_comp(cdsBit)
                 origCDS.append(cdsBit)
+        # Resolve overlaps in the new gene model coords
+        finalCDSCoords = []
+        for i in range(len(newCoords)-1,-1,-1):
+                if i != 0:
+                        # Remove redundant coords immediately
+                        if newCoords[i] == newCoords[i-1]:
+                                del newCoords[i]                                                        # We get redundant coords when we naturally join two exons.
+                                continue
+                        # Compare current to future coord and look for overlap
+                        split1 = newCoords[i].split('-')
+                        split2 = newCoords[i-1].split('-')
+                        if int(split1[1]) >= int(split2[0]) and int(split1[0]) <= int(split2[1]):       # If the end of seq1 > start of seq2 AND the start of seq1 < end of seq2, then we know there's overlap regardless of orientation
+                                # Pick out the longest coordinate
+                                seq1Len = int(split1[1]) - int(split1[0])
+                                seq2Len = int(split2[1]) - int(split2[0])
+                                if seq2Len > seq1Len:
+                                        del newCoords[i]
+                                else:
+                                        del newCoords[i-1]
+                        else:
+                                finalCDSCoords.append(newCoords[i])
+                else:
+                        finalCDSCoords.append(newCoords[i])
+        finalCDSCoords.reverse()                                                                        # This is because we loop through newCoords in reverse - we need it to go back to its original order for the CDS orientation to be mainted
         # Build the new gene model
         newCDS = []
-        prevCoord = ''
-        for coord in newCoords:
-                if coord == prevCoord:
-                        continue                                                                        # We get redundant coords when we naturally join two exons.
-                prevCoord = coord                                                                       # Hold onto this so we can find redundant coords (can happen when we have exon joinage, a single GMAP match will cover both exons).
+        for coord in finalCDSCoords:
                 splitCoord = coord.split('-')
                 coordRange = range(int(splitCoord[0]), int(splitCoord[1])+1)                            # Our VCF dictionary is 1-based at this point, so we want our range to act like this, too.
                 cdsBit = vcf_edit(tmpVcf, contigID, coordRange)
@@ -181,7 +201,7 @@ def cds_build(origCoords, newCoords, contigID, orientation, tmpVcf):
         # Joing our CDS bits together
         origCDS = ''.join(origCDS)
         newCDS = ''.join(newCDS)
-        return origCDS, newCDS        
+        return origCDS, newCDS   
 
 def vcf_merge(vcf1, vcf2):                                                                              # This will merge vcf2 into vcf1 (currently this direction doesn't matter, but I might change this later).
         # Merge the temporary vcf into the main one
@@ -602,32 +622,26 @@ verbose_print(args, 'Loaded transcriptome fasta file')
 
 
 # Declare values needed for processing
-minCutoff = 98                                                                                          # I don't think this value should be modifiable - the program is built around this value, increasing it will result in finding very few results, and decreasing it will likely result in false changes.
-consensusCutoff = 97                                                                                    # 1% difference is actually really noticeable. Going down to 96% I notice some spurious changes being made (presumably by paralogues) so I think this represents a real sweet spot in the code's behaviour.
-"""I have two values here for two main reasons. Firstly, this script tries to help the user validate
-any modifications by alerting them to whether the gene model has increased or decreased in size.
-Size decreases may be cause for concern, though in reality I've not found the problem to identifiably
-make mistakes with the amount of scrutiny built into this program. Nonetheless, we want to grab GMAP
-matches for exons if they exist even if we decide not to use them to edit the genome just so we can
-note where the exon locations are when building our new gene model prediction.
-
-Secondly, I found a distinct scenario where a 97.8% transcript highlighted a real indel error. I was faced
-with three choices, 1) be content with the program sometimes missing real indels so we don't make mistakes,
-2) reduce my minCutoff to 97.5% arbitrarily to handle this one case at the risk of false positives slipping through, 
-or 3) add an extra consensus module similar to what I use with the gene rescue procedure so we can reduce the
-cutoff just a little bit more without compromising accuracy (it actually increases the accuracy). I chose #3.
+minCutoff = 97                                                                                          # I don't think this value should be modifiable - the program is built around this value, increasing it will result in finding very few results, and decreasing it will likely result in false changes
+gmapCutoff = 95
+"""I have two values here since, in a testing scenario, my gmap_curate function was too strict. 
+Since we're checking for exon skipping now (wasn't part of the original plan but it is useful)
+we want to see if there is any transcript support for the exon at all for the purpose of
+providing validation information in the form of gene length increases/decreases, and the best
+way to do that is to lower our gmapCutoff to see if something similar to the real exon is part of the real
+gene model or not, but still use our strict cutoff for making any indel modifications.
 
 Additionally, I am pretty sure I found a case where GMAP's identity score was noted as 97%
 but in reality it was 100% identical. I've noticed a handful of weird things GMAP does (hence why I 
 align my genomic exon segment against the whole transcript, GMAP's coordinates aren't trustworthy..)
-so I try to limit my trust in the program's identity calculation."""
+so I try to limit my trust in the program's accuracy."""
 vcfDict = {}                                                                                            # This dictionary will hold onto values in a style that is similar to VCF, making output and parsing easier.
 geneBlocks = {}                                                                                         # This dictionary serves as a form of validation. By holding onto model starts/stops, we'll be able to check for overlap which will tell us if gene models will end up merged in the reannotation.
 
 ### CORE PROCESS
 verbose_print(args, '### Main gene improvement module start ###')
 for key, model in nuclDict.items():
-        if 'utg0_pilon_pilon' not in key:
+        if 'utg0_pilon_pilon' not in key: ## TESTING
                 continue
         # Hold onto both the original gene model, as well as the new gene model resulting from indel correction/exon boundary modification
         origModelCoords = []
@@ -653,7 +667,7 @@ for key, model in nuclDict.items():
                         # Log
                         log_update(args, logName, [key, model, i, gmapMatches, '.', '.'])
                         continue
-                gmapMatches = gmap_curate(consensusCutoff, gmapMatches, model, i)
+                gmapMatches = gmap_curate(gmapCutoff, gmapMatches, model, i)
                 # Continue if no GMAP matches
                 if gmapMatches == []:
                         origModelCoords.append(model[0][i])
@@ -669,57 +683,36 @@ for key, model in nuclDict.items():
                         # Perform SSW alignment
                         sswResults.append(ssw(genomePatchRec, transcriptRecord) + [match[0], match[1], match[5], match[4]])  # SSW returns [transcriptAlign, genomeAlign, hyphen, startIndex, alignment.optimal_alignment_score), and we also + [matchStart, matchEnd, matchName, matchOrientation] to this.
                 sswResults.sort(key = lambda x: (-x[4], x[2], x[3]))                                    # i.e., sort so score is maximised, then sort by presence of hyphens then by the startIndex
-                # If no indels are present in our best alignment, then continue
+                # Look at our best match to see if indels are present
                 if sswResults[0][2] == 'n':                                                             # i.e., if we have no hyphens in our alignment, then there are no indels
                         origModelCoords.append(model[0][i])
                         newModelCoords.append(str(sswResults[0][5]) + '-' + str(sswResults[0][6]))      # Despite the fact that no indels are present, it's possible that the exon boundaries should change to fit with other indels. Thus, we'll use the exon boundaries suggested by SSW.
                         # Log
                         log_update(args, logName, [key, model, i, sswResults, '.', 'hit'])
-                # If indels are present, then handle single and multiple matching scenarios             # I'm handling these separately because of a situation I found with a 97.8% alignment that indicated a real indel (discussed above).
                 else:
-                        # Single transcript match handling
-                        if len(sswResults) == 1:
+                        # Loop through our sswResults and find an alignment that isn't discarded (i.e., if sswIdentity == 0 we discarded the alignment, find the first one that isn't this)
+                        if len(sswResults) == 1:                                                        # Change our cutoff to reflect different levels of support (only 1 alignment is more suspect, multiple alignments means the best hit has a high chance of actually originating here).
+                                tmpCutoff = 98
+                        else:
+                                tmpCutoff = minCutoff                                                   # Technically I could just declare the cutoff to use within this part and not before this loop begins, but I think it helps to understand the decision making process of this program.
+                        for j in range(len(sswResults)):
+                                sswIdentity, tmpVcf = indel_location(sswResults[j][0], sswResults[j][1], sswResults[j][5], model, sswResults[j][3])     # This will update our vcfDict with indel locations
+                                if sswIdentity == 0 and j != len(sswResults) - 1:                       # This means we'll skip the current result if it was discarded and if we're not looking at the very last result. If it's the last result and it was discarded, then we just go through to the next part for logging purposes.
+                                        continue
                                 # Modify our modelVcf if the alignment is trustworthy
-                                sswIdentity, tmpVcf = indel_location(sswResults[0][0], sswResults[0][1], sswResults[0][5], model, sswResults[0][3], minCutoff)   # This will update our vcfDict with indel locations.
-                                if sswIdentity >= minCutoff:
+                                if sswIdentity >= tmpCutoff:
                                         modelVcf = vcf_merge(modelVcf, tmpVcf)
                                         origModelCoords.append(model[0][i])
-                                        newModelCoords.append(str(sswResults[0][5]) + '-' + str(sswResults[0][6]))
+                                        newModelCoords.append(str(sswResults[j][5]) + '-' + str(sswResults[j][6]))
                                         # Log
                                         log_update(args, logName, [key, model, i, sswResults, tmpVcf, 'hit'])
+                                        break
                                 else:
                                         origModelCoords.append(model[0][i])
                                         newModelCoords.append(model[0][i])                                      # Like above after gmap_curate, there is transcript support for this exon. Here, we chose not to make any changes, so we'll stick to the original coordinates.
                                         # Log
                                         log_update(args, logName, [key, model, i, sswResults, '.', 'hit'])
-                        # Multiple transcript match handling
-                        else:
-                                # Grab any indels located in the exact same position by all good alignments
-                                indelLocations = set()
-                                firstVcf = ''
-                                for result in sswResults:
-                                        if '-' in result[0] or '-' in result[1]:
-                                                sswIdentity, tmpVcf = indel_location(result[0], result[1], result[5], model, result[3], consensusCutoff)   # This will update our vcfDict with indel locations.
-                                                if sswIdentity >= consensusCutoff:
-                                                        # Get the tmpVcf locations (i.e., keys) into a list for comparison
-                                                        tmpLocations = set(tmpVcf[model[2]].keys())
-                                                        # Save our first/best VCF dict
-                                                        if firstVcf == '':
-                                                                firstVcf = copy.deepcopy(tmpVcf)
-                                                                indelLocations = tmpLocations                   # This kick starts our intersection set.
-                                                        indelLocations.intersection(tmpLocations)
-                                if indelLocations != set() and firstVcf != '':
-                                        # Since we have multiple alignments all agreeing on the exact same location of the indel(s), we are pretty happy that this indel is genuine
-                                        modelVcf = vcf_merge(modelVcf, firstVcf)
-                                        origModelCoords.append(model[0][i])
-                                        newModelCoords.append(str(sswResults[0][5]) + '-' + str(sswResults[0][6]))
-                                        # Log
-                                        log_update(args, logName, [key, model, i, sswResults, tmpVcf, 'hit'])
-                                else:
-                                        origModelCoords.append(model[0][i])
-                                        newModelCoords.append(model[0][i])                                      # Like above after gmap_curate, there is transcript support for this exon. Here, we chose not to make any changes, so we'll stick to the original coordinates.
-                                        # Log
-                                        log_update(args, logName, [key, model, i, sswResults, '.', 'hit'])
+                                        break
                                 
         # Hold onto any indel positions and provide logging information about this
         if modelVcf == {}:
@@ -813,7 +806,7 @@ if args.rescue_genes:
                         firstVcf = ''
                         same = 'y'
                         for result in sswResults:
-                                sswIdentity, tmpVcf = indel_location(result[0], result[1], result[5], model, result[3], minCutoff)   # This will update our vcfDict with indel locations.
+                                sswIdentity, tmpVcf = indel_location(result[0], result[1], result[5], model, result[3])   # This will update our vcfDict with indel locations.
                                 if sswIdentity >= minCutoff:
                                         # Get the tmpVcf locations (i.e., keys) into a list for comparison
                                         indelLocations.append(set(tmpVcf[match[7]].keys()))
