@@ -49,7 +49,7 @@ def gmap_exon_finder(gmapLoc, model, coordIndex, processType):
         outList = []
         for entry in dictEntries:
                 for subentry in entry:
-                        outList.append(subentry)
+                        outList.append(subentry + ['.'])                                                # This is to accommodate the below changes with 'exact'/'encompass'. Boundary matches are really annoying to handle but the behaviour is necessary, unfortunately.
         # Extra processing if looking at first and last exons
         if processType == 'boundary':
                 encompass = []
@@ -57,16 +57,33 @@ def gmap_exon_finder(gmapLoc, model, coordIndex, processType):
                 # Narrow down this list further to make sure we're only holding onto perfect boundary matches OR fully encompassing matches
                 for n in range(len(outList)-1, -1, -1):
                         if outList[n][0] == start or outList[n][1] == stop:
-                                exact.append(outList[n])
+                                exact.append(outList[n][:-1] + ['exact'])                               # Get rid of the empty '.' and replace it
                         elif outList[n][0] <= start and outList[n][1] >= stop:                          # This wasn't previously in the program, but it was noticed that boundary and internal handling was too different and causing problems. This should help to equalise their behaviour for the most part.
-                                encompass.append(outList[n])
-                if exact != []:
-                        outList = exact                                                                 # This results in us prioritising exact matches, but allowing encompassing matches to be accepted if we find no exact matches. This was needed to handle a few scenarios.
-                else:
-                        outList = encompass
+                                encompass.append(outList[n][:-1] + ['encompass'])
+                outList = exact + encompass                                                             # We can use this extra info of 'exact' or 'encompass' for prioritising exact matches, but allowing encompassing matches to be accepted if we find no exact matches/for memory across genes. This was needed to handle a few scenarios.
         # Sort and return list
         outList.sort(key = lambda x: (int(x[6]), x[2] - x[1]), reverse = True)                          # Provides a sorted list where, at the top, we have the longest and best matching hits.
         return outList
+
+def check_future(gmapMatches, model, i):
+        # Process if there is actually another downstream exon
+        if i != len(model[0]) - 1:
+                # Grab the GMAP matches for the future exon
+                if i+1 == 0 or i+1 == len(model[0]) - 1:
+                        futureMatches = gmap_exon_finder(gmapLoc, model, i+1, "boundary")
+                else:
+                        futureMatches = gmap_exon_finder(gmapLoc, model, i+1, "internal")
+                # Get futureMatches IDs
+                futureIDs = []
+                for match in futureMatches:
+                        futureIDs.append(match[5])
+                # Cull any current matches that don't show up in the future
+                outMatches = []
+                for match in gmapMatches:
+                        if match[5] in futureIDs:
+                                outMatches.append(match)
+                return outMatches
+        return gmapMatches
 
 def gmap_curate(minCutoff, gmapMatches, model, coordIndex):
         coords = model[0][coordIndex].split('-')
@@ -250,27 +267,42 @@ def vcf_output(outFileName, vcf, comment):
                         for pair in value:
                                 fileOut.write('\t'.join([key, str(pair[0]), str(pair[1][0])]) + '\n')
 
-def vcf_clean(vcf, model):
-        if model[2] in vcf:                                                                                     # We don't need to clean anything if there are no entries associated with this contig yet
-                # Figure out our current model's range
-                firstCoord = model[0][0].split('-')
-                lastCoord =  model[0][-1].split('-')
-                if model[1] == '+':
-                        start = int(firstCoord[0])
-                        stop = int(lastCoord[1])
+def double_polish_check(modVcf, mainVcf, vcf, rangeDict, model, result):
+        # Deep copy everything to stop annoying problems...
+        modVcf = copy.deepcopy(modVcf)                                                                          # Need deepcopies so we can delete these freely in our tmpVcf without changing the original modelVcf/vcfDict dictionaries.
+        mainVcf = copy.deepcopy(mainVcf)
+        # Check for double polishing
+        currentRange = set(range(int(result[5]), int(result[6]) + 1))
+        ovlRanges = set()
+        if model[2] in rangeDict:                                                                               # This function looks through out rangeDict (i.e., our previously polished positions) and looks at our current range that we intend to polish to see if there is overlap.
+                for value in rangeDict[model[2]]:                                                               # If there is overlap, we want to record the exact positions where overlap occurs.
+                        ovl = currentRange.intersection(value)                                                  # This lets us subsequently remove these positions from our input vcf (which will be the tmpVcf) to prevent double polishing.
+                        if ovl != set():
+                                ovlRanges = ovlRanges.union(ovl)
+        # Remove any vcf positions covered by ovlRanges
+        delPositions = []
+        for vcfPos in vcf[model[2]]:
+                if vcfPos in ovlRanges:
+                        delPositions.append(vcfPos)
+        for entry in delPositions:
+                del vcf[model[2]][entry]
+        # Add in any vcf positions covered by ovlRanges from our overall vcfDict
+        if model[2] in modVcf:
+                for key, value in modVcf[model[2]].items():
+                        if key in currentRange:
+                                vcf[model[2]][key] = value
+        if model[2] in mainVcf:
+                for key, value in mainVcf[model[2]].items():
+                        if key in currentRange:
+                                vcf[model[2]][key] = value
+        # Add to our rangeDict if we ended up with any remaining edits
+        if vcf != {}:
+                if model[2] not in rangeDict:
+                        rangeDict[model[2]] = [range(int(result[5]), int(result[6]) + 1)]                       # Make the range 1-based.
                 else:
-                        stop = int(firstCoord[1])
-                        start = int(lastCoord[0])
-                modelRange = range(start, stop + 1)                                                             # Make the range 1-based
-                # Remove any vcf positions that are part of the present model range
-                vcfVals = vcf[model[2]]
-                ovlIndices = [index for index in vcfVals if index in modelRange]
-                for index in ovlIndices:
-                        del vcfVals[index]
-                # Clean up any empty dictionary keys
-                if vcf[model[2]] == {}:
-                        del vcf[model[2]]
-        return vcf
+                        if range(int(result[5]), int(result[6]) + 1) not in rangeDict[model[2]]:
+                                rangeDict[model[2]].append(range(int(result[5]), int(result[6]) + 1))
+        return vcf, rangeDict
 
 def translate_cds(seq1, seq2):
         # Translate into ORFs and grab the longest bits inbetween stop codons
@@ -280,7 +312,7 @@ def translate_cds(seq1, seq2):
                 tmpLongest = ''
                 for frame in range(3):
                         with warnings.catch_warnings():
-                                warnings.simplefilter('ignore')                                         # This is just to get rid of BioPython warnings about len(seq) not being a multiple of three. We know that in two of these frames that will be true so it's not a problem.
+                                warnings.simplefilter('ignore')                                                 # This is just to get rid of BioPython warnings about len(seq) not being a multiple of three. We know that in two of these frames that will be true so it's not a problem.
                                 frameProt = str(records[i][frame:].translate(table=1))
                         frameProt = frameProt.split('*')
                         frameProt.sort(key = len, reverse = True)
@@ -665,15 +697,14 @@ align my genomic exon segment against the whole transcript, GMAP's coordinates a
 so I try to limit my trust in the program's accuracy."""
 vcfDict = {}                                                                                            # This dictionary will hold onto values in a style that is similar to VCF, making output and parsing easier.
 geneBlocks = {}                                                                                         # This dictionary serves as a form of validation. By holding onto model starts/stops, we'll be able to check for overlap which will tell us if gene models will end up merged in the reannotation.
-prevBestResult = ''                                                                                     # This will let us remember our previous best match and, if it's also present in the next exon's gmapMatches, we just skip this exon. This will reduce the chance of small differences of opinion ruining gene models.
+polishedRanges = {}
+prevBestResult = [[],[],[]]                                                                             # This will let us remember our previous best match and, if it's also present in the next exon's gmapMatches, we just skip this exon. This will reduce the chance of small differences of opinion ruining gene models.
                                                                                                         # It's worth noting that we also want to hold this value across genes, hence why I want to declare a blank value before we start our core loop.
 ### CORE PROCESS
 verbose_print(args, '### Main gene improvement module start ###')
 for key, model in nuclDict.items():
         if 'utg0_pilon_pilon' not in key: ## TESTING
                 continue
-        # VCF dictionary correction - remove any changes made to this gene model by others (this will reduce the chance of correcting the same genomic sequence with two different transcripts with differences of opinion)
-        vcfDict = vcf_clean(vcfDict, model)
         # Hold onto both the original gene model, as well as the new gene model resulting from indel correction/exon boundary modification
         origModelCoords = []
         newModelCoords = []
@@ -699,6 +730,8 @@ for key, model in nuclDict.items():
                         log_update(args, logName, [key, model, i, gmapMatches, '.', '.'])
                         continue
                 gmapMatches = gmap_curate(gmapCutoff, gmapMatches, model, i)
+                # Look into the future: cull any GMAP matches if they don't show up as a match in the next exon too
+                gmapMatches = check_future(gmapMatches, model, i)
                 # Continue if no GMAP matches
                 if gmapMatches == []:
                         origModelCoords.append(model[0][i])
@@ -712,9 +745,9 @@ for key, model in nuclDict.items():
                         # Grab the sequences for alignment                                              # Note that we're going to compare the portion of the genome which the transcript hits (from GMAP) to the full transcript since GMAP handles N's weirdly and thus its transcript coordinates cannot be used.
                         transcriptRecord, genomePatchRec = patch_seq_extract(match, model)
                         # Perform SSW alignment
-                        sswResults.append(ssw(genomePatchRec, transcriptRecord) + [match[0], match[1], match[5], match[4]])  # SSW returns [transcriptAlign, genomeAlign, hyphen, startIndex, alignment.optimal_alignment_score), and we also + [matchStart, matchEnd, matchName, matchOrientation] to this.
+                        sswResults.append(ssw(genomePatchRec, transcriptRecord) + [match[0], match[1], match[5], match[4], match[8]])  # SSW returns [transcriptAlign, genomeAlign, hyphen, startIndex, alignment.optimal_alignment_score), and we also + [matchStart, matchEnd, matchName, matchOrientation, 'exact/encompass'] to this.
                 sswResults.sort(key = lambda x: (-x[4], x[2], x[3]))                                    # i.e., sort so score is maximised, then sort by presence of hyphens then by the startIndex
-                # Look at our best match to see if indels are present
+                # Look at our best match to see if indels are present                                   # Note that this isn't perfect, we still need to check later, but this does stop processing and speed up the program.
                 if sswResults[0][2] == 'n':                                                             # i.e., if we have no hyphens in our alignment, then there are no indels
                         origModelCoords.append(model[0][i])
                         newModelCoords.append(str(sswResults[0][5]) + '-' + str(sswResults[0][6]))      # Despite the fact that no indels are present, it's possible that the exon boundaries should change to fit with other indels. Thus, we'll use the exon boundaries suggested by SSW.
@@ -739,11 +772,24 @@ for key, model in nuclDict.items():
                                 # Log
                                 log_update(args, logName, [key, model, i, sswResults, '.', 'hit'])
                         else:
-                                # Check to see if one of these results is identical to the accepted one from the last exon
-                                sswIdentity, tmpVcf, result = acceptedResults[0]                                # Hold onto the best result and overwrite these values if we find the result used for the previous exon.
+                                # Check to see if one of these results is identical to the accepted one from the last exon [This holds memory across genes]
+                                sswIdentity, tmpVcf, result = acceptedResults[0]                                # Hold onto the best result and overwrite these values if we find the result used for the previous exon/an exact boundary match if relevant.
                                 for l in range(len(acceptedResults)):
-                                        if acceptedResults[l] == prevBestResult:
+                                        if acceptedResults[l][2][:-1] == prevBestResult[2][:-1]:                # The final position (exact/encompass/.) might differ, we just want to look at what comes before that.
                                                 sswIdentity, tmpVcf, result = prevBestResult
+                                                break
+                                        elif i == 0 or i == len(model[0]) - 1:
+                                                if result[9] != 'exact' and acceptedResults[l][2][9] == 'exact':
+                                                        sswIdentity, tmpVcf, result = acceptedResults[l]        # This allows us to reprioritise exact matches over encompassing matches if we're looking at a gene boundary.
+                                # Does this result even have any edits?
+                                if tmpVcf == {}:
+                                        origModelCoords.append(model[0][i])
+                                        newModelCoords.append(model[0][i])                                      # Like above after gmap_curate, there is transcript support for this exon. Here, we chose not to make any changes, so we'll stick to the original coordinates.
+                                        # Log
+                                        log_update(args, logName, [key, model, i, [result], '.', 'hit'])
+                                        continue
+                                # Double polishing check [This also holds memory across genes]
+                                tmpVcf, polishedRanges = double_polish_check(modelVcf, vcfDict, tmpVcf, polishedRanges, model, result)
                                 # Modify our modelVcf
                                 modelVcf = vcf_merge(modelVcf, tmpVcf)
                                 origModelCoords.append(model[0][i])
