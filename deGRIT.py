@@ -202,7 +202,6 @@ def indel_location(transcriptAlign, genomeAlign, matchStart, matchEnd, model, st
                                                 stopIndex = origGenomeAlign.lower().find(endCDS[:cutoffPos])
                                                 if stopIndex != -1:
                                                         break
-                        
                         # Make any modifications suggested by the transcript to this codon
                         genomeCodon = origGenomeAlign[stopIndex:stopIndex+3]
                         transcriptCodon = transcriptAlign[stopIndex:stopIndex+3]
@@ -227,23 +226,24 @@ def prot_identity(prot1, prot2):
         return pctIdentity
 
 def vcf_edit(tmpVcf, contigID, coordRange):
-        # Extract edit positions
-        subVcfDict = tmpVcf[contigID]
-        tmpVcfList = []
-        for key, value in subVcfDict.items():
-                if key in coordRange:
-                        tmpVcfList.append([key, value[0]])
-        tmpVcfList.sort(reverse=True)
-        # Edit the genome sequence
-        genomeSeq = str(genomeRecords[contigID].seq)[min(coordRange)-1:max(coordRange)]                 # -1 for 0-based.
-        for pair in tmpVcfList:
-                indelIndex = pair[0] - min(coordRange)                                                  # pair[0] refers to the actual genomic index, but we want to find the location in this particular genome section, so we just minus the start coordinate.
-                if pair[1] == '.':
-                        genomeSeq = genomeSeq[:indelIndex] + genomeSeq[indelIndex+1:]                   # Since pair[0] and coordRange are 1-based, minusing these results in an index that is, essentially, 0-based.
-                elif '*' in pair[1]:
-                        genomeSeq = genomeSeq[:indelIndex] + pair[1][0] + genomeSeq[indelIndex+1:]      # This makes a substitution in our genome (as marked by the asterisk)
-                else:
-                        genomeSeq = genomeSeq[:indelIndex] + pair[1] + genomeSeq[indelIndex:]           # Because of this, we +1 to the second bit to skip the indelIndex, and leave this neutral to simply insert a base at the indel index.
+        genomeSeq = str(genomeRecords[contigID].seq)[min(coordRange)-1:max(coordRange)]                         # -1 for 0-based.
+        if contigID in tmpVcf:                                                                                  # We used to always have edits when using this function but because of the stop codon check sometimes that isn't true. We'll just directly return the genome sequence if there are no edits.
+                # Extract edit positions
+                subVcfDict = tmpVcf[contigID]
+                tmpVcfList = []
+                for key, value in subVcfDict.items():
+                        if key in coordRange:
+                                tmpVcfList.append([key, value[0]])
+                tmpVcfList.sort(reverse=True)
+                # Edit the genome sequence
+                for pair in tmpVcfList:
+                        indelIndex = pair[0] - min(coordRange)                                                  # pair[0] refers to the actual genomic index, but we want to find the location in this particular genome section, so we just minus the start coordinate.
+                        if pair[1] == '.':
+                                genomeSeq = genomeSeq[:indelIndex] + genomeSeq[indelIndex+1:]                   # Since pair[0] and coordRange are 1-based, minusing these results in an index that is, essentially, 0-based.
+                        elif '*' in pair[1]:
+                                genomeSeq = genomeSeq[:indelIndex] + pair[1][0] + genomeSeq[indelIndex+1:]      # This makes a substitution in our genome (as marked by the asterisk)
+                        else:
+                                genomeSeq = genomeSeq[:indelIndex] + pair[1] + genomeSeq[indelIndex:]           # Because of this, we +1 to the second bit to skip the indelIndex, and leave this neutral to simply insert a base at the indel index.
         return genomeSeq    
 
 def cds_build(origCoords, newCoords, contigID, orientation, tmpVcf):
