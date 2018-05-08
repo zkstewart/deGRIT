@@ -165,6 +165,7 @@ def indel_location(transcriptAlign, genomeAlign, matchStart, matchEnd, model, st
                         literalLocations.append([x, pair[0]])
         # New module: incorrect stop codon identification
         if i != 0 and i != len(model[0]) - 1:                                                           # We only look at internal exons since our terminal ones may
+                # Edit our genomeAlign sequence directly so we can find any stop codons
                 literalLocations.sort(reverse=True)
                 origGenomeAlign = genomeAlign                                                           # Hold onto this for original coordinates
                 genomeAlign = genomeAlign.replace('-', '')
@@ -176,6 +177,7 @@ def indel_location(transcriptAlign, genomeAlign, matchStart, matchEnd, model, st
                 # Reverse complement if necessary
                 if model[1] == '-':
                         genomeAlign = reverse_comp(genomeAlign)
+                # Check to see if there are any frames which lack a stop codon
                 stopCodons = ['tag', 'taa', 'tga']
                 firstStop = [-1,-1,-1]
                 for frame in range(3):
@@ -184,34 +186,38 @@ def indel_location(transcriptAlign, genomeAlign, matchStart, matchEnd, model, st
                         for c in range(len(codons)):
                                 if codons[c] in stopCodons:
                                         firstStop[frame] = c
-                # If we lack any frames with stop codons, look for substitions for stop codons in the longest frame
+                # If we lack any frames with stop codons, pull out the CDS and find where the stop codon occurs
                 if -1 not in firstStop:
                         # Copy our lists to make temporary modifications
                         origCoords = copy.deepcopy(origCoords)
                         newCoords = copy.deepcopy(newCoords)
+                        # Grab our CDS
                         newCoords.append(str(matchStart) + '-' + str(matchEnd))
-                        origCDS, newCDS = cds_build(origCoords, newCoords, model[2], model[1], tmpVcf)  # origCDS doesn't matter here, we just do it to not break the older function
+                        origCDS, newCDS = cds_build(origCoords, newCoords, model[2], model[1], tmpVcf)  # origCDS doesn't matter here, we just do it to not break the older function.
                         newCDS = newCDS.lower()
                         # Find our stop codon's coordinates
                         codons = [newCDS[i:i+3] for i in range(0, len(newCDS), 3)]
                         for c in range(len(codons)):
                                 if codons[c] in stopCodons:
-                                        endCDS = newCDS[c*3:]
+                                        endCDS = newCDS[c*3:]                                           # Essentially, when we find the stop codon, we pull out this codon + any tail sequence. The tail sequence lets us pin point precisely where the stop codon starts using a simple .find().
                                         for fraction in [1.0, 0.75, 0.5, 0.25, 0.1]:
-                                                cutoffPos = int(len(endCDS) * fraction)                 # We do this just in case the genomeAlign has bits stripped off its tail end
-                                                stopIndex = origGenomeAlign.lower().find(endCDS[:cutoffPos])
+                                                cutoffPos = int(len(endCDS) * fraction)                 # We do this just in case the genomeAlign has had bits stripped off its tail end during SSW.
+                                                stopIndex = genomeAlign.lower().find(endCDS[:cutoffPos])
                                                 if stopIndex != -1:
                                                         break
-                        # Make any modifications suggested by the transcript to this codon
-                        genomeCodon = origGenomeAlign[stopIndex:stopIndex+3]
-                        transcriptCodon = transcriptAlign[stopIndex:stopIndex+3]
-                        for x in range(len(genomeCodon)):
-                                genomeIndex = matchStart + startIndex + stopIndex + x
-                                if genomeCodon[x] != transcriptCodon[x]:
-                                        if model[2] not in tmpVcf:
-                                                tmpVcf[model[2]] = {genomeIndex: [transcriptCodon[x] + '*']}    # We'll use asterisks to mark substitutions
-                                        else:
-                                                tmpVcf[model[2]][genomeIndex] = [transcriptCodon[x] + '*']
+                        # Save any modifications suggested by the transcript to this codon
+                        if stopIndex != -1:                                                             # We should always be able to find it, but if we can't for some bizarre reason this will prevent errors.
+                                if model[1] == '-':
+                                        stopIndex = len(genomeAlign) - stopIndex - 3                    # This grabs the index of the codon in the reverse complement (which will be the '+' in this case), we - 3 to go to the start of the codon.
+                                genomeCodon = origGenomeAlign[stopIndex:stopIndex+3]
+                                transcriptCodon = transcriptAlign[stopIndex:stopIndex+3]                # Remember that the transcriptAlign and origGenomeAlign are always in the '+' orientation.
+                                for x in range(len(genomeCodon)):
+                                        genomeIndex = matchStart + startIndex + stopIndex + x
+                                        if genomeCodon[x] != transcriptCodon[x]:
+                                                if model[2] not in tmpVcf:
+                                                        tmpVcf[model[2]] = {genomeIndex: [transcriptCodon[x] + '*']}    # We'll use asterisks to mark substitutions.
+                                                else:
+                                                        tmpVcf[model[2]][genomeIndex] = [transcriptCodon[x] + '*']
         # Calculate the (rough) identity score between the alignments
         pctIdentity = (identical / len(transcriptAlign)) * 100
         return pctIdentity, tmpVcf
@@ -632,7 +638,7 @@ def novel_gmap_align_finder(gmapLoc, nuclDict, minCutoff):
         # Compare gmapLoc values to nuclRanges values to find GMAP alignments which don't overlap known genes
         validExons = []
         for key, value in gmapLoc.items():
-                if value[0][7] != 'utg4_pilon_pilon':        ## TESTING
+                if value[0][7] != 'utg11_pilon_pilon':        ## TESTING
                         continue
                 gmapHits = copy.deepcopy(value)
                 # Cull any hits that aren't good enough                                                 # It's important that we're stricter here than we are with the established gene model checking.
@@ -770,7 +776,7 @@ prevBestResult = ''                                                             
 ### CORE PROCESS
 verbose_print(args, '### Main gene improvement module start ###')
 for key, model in nuclDict.items():
-        if 'utg104_pilon_pilon' not in key: ## TESTING
+        if 'utg11_pilon_pilon' not in key: ## TESTING
                 continue
         # Hold onto both the original gene model, as well as the new gene model resulting from indel correction/exon boundary modification
         origModelCoords = []
