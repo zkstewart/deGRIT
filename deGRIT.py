@@ -144,10 +144,11 @@ def indel_location(transcriptAlign, genomeAlign, matchStart, matchEnd, model, st
                         return 0, '.'                                                                   # We return 0 since that tells the main part of the script that this hit isn't good enough and to stick to the current model coordinates, the tmpVcf value doesn't matter in this case so just return '.'.
         # Process the alignment to find differences
         identical = 0
+        gapCorrection = 0                                                                               # If we have a gap in our genomeAlign, every position after that needs to be minused 1 to correct for this. This value will hold onto this value and apply it to our index calculation.
         tmpVcf = {}                                                                                     # We want to add results into a temporary dictionary because, for sequences which mysteriously do not have good identity, we don't want to save their edit positions.
-        literalLocations = []                                                                           # This is for the incorrect stop codon identification, we just grab the coordinates for the genome segment itself directly
+        literalLocations = []                                                                           # This is for the incorrect stop codon identification, we just grab the coordinates for the genome segment itself directly.
         for x in range(len(transcriptAlign)):
-                genomeIndex = matchStart + startIndex + x                                               # This will correspond to the genomic contig index [note that we add startIndex to match[0] because we may have trimmed some of the 5' sequence during SW alignment].
+                genomeIndex = matchStart + startIndex + x - gapCorrection                               # This will correspond to the genomic contig index [note that we add startIndex to match[0] because we may have trimmed some of the 5' sequence during SW alignment].
                 pair = transcriptAlign[x] + genomeAlign[x]                                              # Note that these are 1-based, so we'll need to account for this behaviour later.
                 if pair[0] == pair[1]:
                         identical += 1
@@ -156,13 +157,17 @@ def indel_location(transcriptAlign, genomeAlign, matchStart, matchEnd, model, st
                                 tmpVcf[model[2]] = {genomeIndex: ['.']}
                         else:
                                 tmpVcf[model[2]][genomeIndex] = ['.']
-                        literalLocations.append([x, '.'])
+                        literalLocations.append([x-gapCorrection, '.'])
                 elif pair[1] == '-':
                         if model[2] not in tmpVcf:
                                 tmpVcf[model[2]] = {genomeIndex: [pair[0]]}
                         else:
-                                tmpVcf[model[2]][genomeIndex] = [pair[0]]
-                        literalLocations.append([x, pair[0]])
+                                if genomeIndex not in tmpVcf[model[2]]:
+                                        tmpVcf[model[2]][genomeIndex] = [pair[0]]
+                                else:
+                                        tmpVcf[model[2]][genomeIndex][0] += pair[0]
+                        literalLocations.append([x-gapCorrection, pair[0]])
+                        gapCorrection += 1
         # New module: incorrect stop codon identification
         if i != 0 and i != len(model[0]) - 1:                                                           # We only look at internal exons since our terminal ones may
                 # Edit our genomeAlign sequence directly so we can find any stop codons
@@ -247,7 +252,7 @@ def vcf_edit(tmpVcf, contigID, coordRange):
                         if pair[1] == '.':
                                 genomeSeq = genomeSeq[:indelIndex] + genomeSeq[indelIndex+1:]                   # Since pair[0] and coordRange are 1-based, minusing these results in an index that is, essentially, 0-based.
                         elif '*' in pair[1]:
-                                genomeSeq = genomeSeq[:indelIndex] + pair[1][0] + genomeSeq[indelIndex+1:]      # This makes a substitution in our genome (as marked by the asterisk)
+                                genomeSeq = genomeSeq[:indelIndex] + pair[1][0] + genomeSeq[indelIndex+1:]      # This makes a substitution in our genome (as marked by the asterisk).
                         else:
                                 genomeSeq = genomeSeq[:indelIndex] + pair[1] + genomeSeq[indelIndex:]           # Because of this, we +1 to the second bit to skip the indelIndex, and leave this neutral to simply insert a base at the indel index.
         return genomeSeq    
@@ -272,7 +277,7 @@ def cds_build(origCoords, newCoords, contigID, orientation, tmpVcf):
                         # Compare current to future coord and look for overlap
                         split1 = newCoords[i].split('-')
                         split2 = newCoords[i-1].split('-')
-                        if int(split1[1]) >= int(split2[0]) and int(split1[0]) <= int(split2[1]):       # If the end of seq1 > start of seq2 AND the start of seq1 < end of seq2, then we know there's overlap regardless of orientation
+                        if int(split1[1]) >= int(split2[0]) and int(split1[0]) <= int(split2[1]):       # If the end of seq1 > start of seq2 AND the start of seq1 < end of seq2, then we know there's overlap regardless of orientation.
                                 # Pick out the longest coordinate
                                 seq1Len = int(split1[1]) - int(split1[0])
                                 seq2Len = int(split2[1]) - int(split2[0])
@@ -284,7 +289,7 @@ def cds_build(origCoords, newCoords, contigID, orientation, tmpVcf):
                                 finalCDSCoords.append(newCoords[i])
                 else:
                         finalCDSCoords.append(newCoords[i])
-        finalCDSCoords.reverse()                                                                        # This is because we loop through newCoords in reverse - we need it to go back to its original order for the CDS orientation to be mainted
+        finalCDSCoords.reverse()                                                                        # This is because we loop through newCoords in reverse - we need it to go back to its original order for the CDS orientation to be mainted.
         # Build the new gene model
         newCDS = []
         for coord in finalCDSCoords:
@@ -440,7 +445,7 @@ def gmap_parse_ranges(gmapFile):
                         if not sl[8].startswith('ID=blat.proc'):                                        # May as well make the code compatible with BLAT.
                                 geneID = sl[8].split(';')[1][5:]                                        # Start from 5 to get rid of 'Name='.
                         else:
-                                geneID = sl[8].split(';')[1].split()[0][7:]                             # Start from 5 to get rid of 'Target='.
+                                geneID = sl[8].split(';')[1].split()[0][7:]                             # Start from 7 to get rid of 'Target='.
                         contigStart = int(sl[3])
                         contigStop = int(sl[4])
                         indexRange = range(contigStart, contigStop+1)                                   # Make it 1-based.
@@ -551,7 +556,7 @@ def validate_args(args):
         tmpFileName = None
         if os.path.isfile(args.outputFileName):
                 if args.force:
-                        # Temporarily move the file to the current directory and delete the file at the end of program run - this acts as a safety mechanism if someone actually ends up not wanting to overwrite the output file
+                        # Temporarily move the file to the current directory and delete the file at the end of program run - this acts as a safety mechanism if someone actually ends up not wanting to overwrite the output file.
                         tmpFileName = file_name_gen('DEGRIT_backup', '_' + os.path.basename(args.outputFileName))
                         shutil.move(args.outputFileName, tmpFileName)                                   # I'm going to do this before I alert the user since they might immediately cause a KeyboardInterrupt and I don't know what happens if you do this during shutil.move().
                         print('You\'ve specified that you want to overwrite ' + args.outputFileName)
@@ -638,8 +643,8 @@ def novel_gmap_align_finder(gmapLoc, nuclDict, minCutoff):
         # Compare gmapLoc values to nuclRanges values to find GMAP alignments which don't overlap known genes
         validExons = []
         for key, value in gmapLoc.items():
-                if value[0][7] != 'utg11_pilon_pilon':        ## TESTING
-                        continue
+                #if value[0][7] != 'utg11_pilon_pilon':        ## TESTING
+                #        continue
                 gmapHits = copy.deepcopy(value)
                 # Cull any hits that aren't good enough                                                 # It's important that we're stricter here than we are with the established gene model checking.
                 for x in range(len(gmapHits)-1,-1,-1):
@@ -755,7 +760,7 @@ verbose_print(args, 'Loaded transcriptome fasta file')
 
 
 # Declare values needed for processing
-minCutoff = 97                                                                                          # I don't think this value should be modifiable - the program is built around this value, increasing it will result in finding very few results, and decreasing it will likely result in false changes
+minCutoff = 97                                                                                          # I don't think this value should be modifiable - the program is built around this value, increasing it will result in finding very few results, and decreasing it will likely result in false changes.
 gmapCutoff = 95
 """I have two values here since, in a testing scenario, my gmap_curate function was too strict. 
 Since we're checking for exon skipping now (wasn't part of the original plan but it is useful)
@@ -776,8 +781,8 @@ prevBestResult = ''                                                             
 ### CORE PROCESS
 verbose_print(args, '### Main gene improvement module start ###')
 for key, model in nuclDict.items():
-        if 'utg11_pilon_pilon' not in key: ## TESTING
-                continue
+        #if 'utg11_pilon_pilon' not in key: ## TESTING
+        #        continue
         # Hold onto both the original gene model, as well as the new gene model resulting from indel correction/exon boundary modification
         origModelCoords = []
         newModelCoords = []
@@ -821,7 +826,7 @@ for key, model in nuclDict.items():
                         transcriptRecord, genomePatchRec = patch_seq_extract(match, model)
                         # Perform SSW alignment
                         sswResults.append(ssw(genomePatchRec, transcriptRecord) + [match[0], match[1], match[5], match[4], match[8]])  # SSW returns [transcriptAlign, genomeAlign, hyphen, startIndex, alignment.optimal_alignment_score), and we also + [matchStart, matchEnd, matchName, matchOrientation, 'exact/encompass'] to this.
-                sswResults.sort(key = lambda x: (-x[4], x[2], x[3]))                                    # i.e., sort so score is maximised, then sort by presence of hyphens then by the startIndex
+                sswResults.sort(key = lambda x: (-x[4], x[2], x[3]))                                    # i.e., sort so score is maximised, then sort by presence of hyphens then by the startIndex.
                 # Change our cutoff to reflect different levels of support (only 1 alignment is more suspect, multiple alignments means the best hit has a high chance of actually originating here)
                 if len(sswResults) == 1:
                         tmpCutoff = 98
@@ -830,7 +835,7 @@ for key, model in nuclDict.items():
                 # Loop through our sswResults and find any good alignments
                 acceptedResults = []
                 for j in range(len(sswResults)):
-                        sswIdentity, tmpVcf = indel_location(sswResults[j][0], sswResults[j][1], sswResults[j][5], sswResults[j][6], model, sswResults[j][3], origModelCoords, newModelCoords, i)     # This will update our vcfDict with indel locations
+                        sswIdentity, tmpVcf = indel_location(sswResults[j][0], sswResults[j][1], sswResults[j][5], sswResults[j][6], model, sswResults[j][3], origModelCoords, newModelCoords, i)     # This will update our vcfDict with indel locations.
                         if sswIdentity >= tmpCutoff:
                                 acceptedResults.append([sswIdentity, tmpVcf, sswResults[j]])
                 # End checking if no results are trustworthy
@@ -864,7 +869,7 @@ for key, model in nuclDict.items():
                         origModelCoords.append(model[0][i])
                         newModelCoords.append(str(result[5]) + '-' + str(result[6]))
                         # Log
-                        log_update(args, logName, [key, model, i, [result], tmpVcf, 'hit'])             # Put result into a list since our logging function expects a list of lists, for which it retrieves the first entry                            
+                        log_update(args, logName, [key, model, i, [result], tmpVcf, 'hit'])             # Put result into a list since our logging function expects a list of lists, for which it retrieves the first entry.
                         
         # Hold onto any indel positions and provide logging information about this
         if modelVcf == {}:
