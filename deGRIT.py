@@ -155,9 +155,14 @@ def indel_location(transcriptAlign, genomeAlign, matchStart, matchEnd, model, st
                 elif pair[0] == '-':
                         if model[2] not in tmpVcf:
                                 tmpVcf[model[2]] = {genomeIndex: ['.']}
+                                literalVcf[x-gapCorrection] = ['.']
                         else:
-                                tmpVcf[model[2]][genomeIndex] = ['.']                                   # This value will be used for stop codon identification.
-                        literalVcf[x-gapCorrection] = ['.']
+                                if genomeIndex not in tmpVcf[model[2]]:
+                                        tmpVcf[model[2]][genomeIndex] = ['.']
+                                        literalVcf[x-gapCorrection] = ['.']
+                                else:                                                                   # By doing this, if we have an insertion followed by a deletion, we'll handle both cases by just substituting the deleted base with the inserted one.
+                                        tmpVcf[model[2]][genomeIndex][0] += '*'
+                                        literalVcf[x-gapCorrection][0] += '*'
                 elif pair[1] == '-':
                         if model[2] not in tmpVcf:
                                 tmpVcf[model[2]] = {genomeIndex: [pair[0]]}
@@ -186,6 +191,9 @@ def stop_codon_identify(literalVcf, genomeAlign, transcriptAlign, startIndex, or
                         if x in literalVcf:
                                 if literalVcf[x] == ['.']:
                                         continue
+                                elif '*' in literalVcf[x][0]:
+                                        outAlign += literalVcf[x][0][:-1]
+                                        genomeIndices.append(x)
                                 else:
                                         outAlign += literalVcf[x][0]
                                         outAlign += genomeAlign[x]
@@ -194,6 +202,16 @@ def stop_codon_identify(literalVcf, genomeAlign, transcriptAlign, startIndex, or
                         else:
                                 genomeIndices.append(x)
                                 outAlign += genomeAlign[x]
+                # Rescue the last index if there's weird stuff going on in the end of the alignment (this should never happen naturally, but if genomeAlign ends with hyphens then we wouldn't end up adding the last bit from the literalVcf)
+                if x+1 in literalVcf:
+                        if literalVcf[x+1] == ['.']:
+                                doNothing = 1
+                        elif '*' in literalVcf[x+1][0]:
+                                outAlign += literalVcf[x+1][0][:-1]
+                                genomeIndices.append(x+1)
+                        else:
+                                outAlign += literalVcf[x+1][0]
+                                genomeIndices += ['-']*len(literalVcf[x+1][0])
                 # Check to see if there are any frames which lack a stop codon
                 stopCodonsPos = ['tag', 'taa', 'tga']
                 stopCodonsNeg = ['cta', 'tta', 'tca']
