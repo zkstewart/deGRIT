@@ -669,7 +669,7 @@ def novel_gmap_align_finder(gmapLoc, nuclDict, minCutoff):
         # Compare gmapLoc values to nuclRanges values to find GMAP alignments which don't overlap known genes
         validExons = []
         for key, value in gmapLoc.items():
-                if value[0][7] != 'utg104_pilon_pilon':        ## TESTING
+                if value[0][7] != 'utg448_pilon_pilon':        ## TESTING
                         continue
                 gmapHits = copy.deepcopy(value)
                 # Cull any hits that aren't good enough                                                 # It's important that we're stricter here than we are with the established gene model checking.
@@ -809,7 +809,7 @@ prevBestResult = ''                                                             
 ### CORE PROCESS
 verbose_print(args, '### Main gene improvement module start ###')
 for key, model in nuclDict.items():
-        if 'utg104_pilon_pilon' not in key: ## TESTING
+        if 'utg448_pilon_pilon' not in key: ## TESTING
                 continue
         # Hold onto both the original gene model, as well as the new gene model resulting from indel correction/exon boundary modification
         origModelCoords = []
@@ -931,8 +931,13 @@ for key, model in nuclDict.items():
                                 verbose_print(args, 'Length is the same but sequence differs a bit. [' + model[3] + ']')
                                 log_comment(args, logName, '#' + model[3] + '\tModel length is the same\tOld=' + origProt + '\tNew=' + newProt)
                 else:
-                        # Check how much shorter the new model is
-                        if len(newProt) / len(origProt) >= 0.90:
+                        # Should we save this modification?
+                        ## Check 1: Single substitution that made things worse? (This likely occurs for genes that lack good transcriptional support. Exon boundaries aren't supported well and a transcript alignment proposes an exon that has no frame that lacks stop codons)
+                        if len(modelVcf[model[2]]) == 1 and '*' in list(modelVcf[model[2]].items())[0][1][0]:
+                                verbose_print(args, 'Found no edits [' + model[3] + ']')
+                                log_comment(args, logName, '#' + model[3] + '\tNo edits found')
+                        # Log how much shorter the new model is
+                        elif len(newProt) / len(origProt) >= 0.90:
                                 """This check is in place for the same reasons as mentioned above about exon skipping. Sometimes the real gene model should have 
                                 a skipped exon (since EVM/PASA will add in a spurious one to maintain a reading frame in the presence of indel error) which means
                                 our newProt will be slightly shorter than origProt and that is not cause for alarm."""
