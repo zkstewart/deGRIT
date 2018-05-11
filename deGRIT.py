@@ -998,12 +998,19 @@ if args.rescue_genes:
                         same = 'y'
                         for result in sswResults:
                                 sswIdentity, tmpVcf = indel_location(result[0], result[1], result[5], model, result[3], 1)           # We can use the previous function by just providing exonIndex of 1, len(model[0]) -1 is always == -1 so we always bypass this check.
+                                # Stop processing if we have an alignment with no edits
+                                if tmpVcf == {}:
+                                        same = 'n'
+                                        indelLocations = []
+                                        break
+                                # If we have edits, add them to our list to check for consensus
                                 if sswIdentity >= minCutoff:
                                         # Get the tmpVcf locations (i.e., keys) into a list for comparison
                                         indelLocations.append(set(tmpVcf[match[7]].keys()))
                                         # Save our first/best VCF dict
                                         if firstVcf == '':
                                                 firstVcf = copy.deepcopy(tmpVcf)
+                        # Check for consensus of location (note that we're not checking the exact character, but we are assuming that one transcript won't indicate an insertion at the exact location another indicates a deletion - this is very improbable, and in any case, the best transcript alignment should be trustworthy)
                         for x in range(0, len(indelLocations)-1):
                                 if indelLocations[x] == indelLocations[x+1]:
                                         continue
