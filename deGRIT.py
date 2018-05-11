@@ -74,7 +74,7 @@ def check_future(gmapMatches, model, i):
                         futureMatches = gmap_exon_finder(gmapLoc, model, i+1, "boundary")
                 else:
                         futureMatches = gmap_exon_finder(gmapLoc, model, i+1, "internal")
-                        if futureMatches == []:                                                         # If we can't find an encompassing match for an internal exon, there's a good chance that PASA has artificially extended this exon to correct for an indel. TESTING.
+                        if futureMatches == []:                                                         # If we can't find an encompassing match for an internal exon, there's a good chance that PASA has artificially extended this exon to correct for an indel.
                                 futureMatches = gmap_exon_finder(gmapLoc, model, i+1, "boundary")
                 # Get futureMatches IDs
                 futureIDs = []
@@ -634,11 +634,6 @@ def log_update(args, logName, inputList):
                         # Format the edit positions for this exon if relevant
                         editPos = '_'
                         if inputList[4] != '.':
-                                #editPos = ''
-                                #for key, value in inputList[4].items():
-                                #        for k2, v2 in value.items():
-                                #                editPos += str(k2) + ':' + v2[0] + ','
-                                #editPos = editPos[:-1]                                                  # Remove the last comma.
                                 editPos = vcf_line_format(inputList[4])
                         # Write to log file
                         logFile.write('\t'.join([inputList[1][2], inputList[1][3], inputList[1][0][i], matchName, matchCoord, transPos, editPos]) + '\n')
@@ -678,8 +673,6 @@ def novel_gmap_align_finder(gmapLoc, nuclDict, minCutoff):
         # Compare gmapLoc values to nuclRanges values to find GMAP alignments which don't overlap known genes
         validExons = []
         for key, value in gmapLoc.items():
-                if value[0][7] != 'utg11_pilon_pilon':        ## TESTING
-                        continue
                 gmapHits = copy.deepcopy(value)
                 # Cull any hits that aren't good enough                                                 # It's important that we're stricter here than we are with the established gene model checking.
                 for x in range(len(gmapHits)-1,-1,-1):
@@ -795,7 +788,6 @@ verbose_print(args, 'Parsed GMAP gff3 file')
 transRecords = SeqIO.to_dict(SeqIO.parse(open(args.transcriptomeFile, 'r'), 'fasta'))
 verbose_print(args, 'Loaded transcriptome fasta file')
 
-
 # Declare values needed for processing
 minCutoff = 97                                                                                          # I don't think this value should be modifiable - the program is built around this value, increasing it will result in finding very few results, and decreasing it will likely result in false changes.
 gmapCutoff = 95
@@ -818,8 +810,6 @@ prevBestResult = ''                                                             
 ### CORE PROCESS
 verbose_print(args, '### Main gene improvement module start ###')
 for key, model in nuclDict.items():
-        if 'utg11_pilon_pilon' not in key: ## TESTING
-                continue
         # Hold onto both the original gene model, as well as the new gene model resulting from indel correction/exon boundary modification
         origModelCoords = []
         newModelCoords = []
@@ -839,7 +829,7 @@ for key, model in nuclDict.items():
                         gmapMatches = gmap_exon_finder(gmapLoc, model, i, "boundary")
                 else:
                         gmapMatches = gmap_exon_finder(gmapLoc, model, i, "internal")
-                        if gmapMatches == []:                                                           # If we can't find an encompassing match for an internal exon, there's a good chance that PASA has artificially extended this exon to correct for an indel. TESTING.
+                        if gmapMatches == []:                                                           # If we can't find an encompassing match for an internal exon, there's a good chance that PASA has artificially extended this exon to correct for an indel.
                                 gmapMatches = gmap_exon_finder(gmapLoc, model, i, "boundary")
                 if gmapMatches == []:
                         origModelCoords.append(model[0][i])                                             # If there is no transcript support for this exon, it might be a spurious attempt by PASA/EVM to keep the gene inframe. Thus, we'll only save these coords under the origModel.
@@ -868,7 +858,7 @@ for key, model in nuclDict.items():
                 if len(sswResults) == 1:
                         tmpCutoff = 98
                 else:
-                        tmpCutoff = minCutoff                                                   # Technically I could just declare the cutoff to use within this part and not before this loop begins, but I think it helps to understand the decision making process of this program.
+                        tmpCutoff = minCutoff                                                           # Technically I could just declare the cutoff to use within this part and not before this loop begins, but I think it helps to understand the decision making process of this program.
                 # Loop through our sswResults and find any good alignments
                 acceptedResults = []
                 for j in range(len(sswResults)):
@@ -878,7 +868,7 @@ for key, model in nuclDict.items():
                 # End checking if no results are trustworthy
                 if acceptedResults == []:
                         origModelCoords.append(model[0][i])
-                        newModelCoords.append(model[0][i])                                      # Like above after gmap_curate, there is transcript support for this exon. Here, we chose not to make any changes, so we'll stick to the original coordinates.
+                        newModelCoords.append(model[0][i])                                              # Like above after gmap_curate, there is transcript support for this exon. Here, we chose not to make any changes, so we'll stick to the original coordinates.
                         # Log
                         log_update(args, logName, [key, model, i, sswResults, '.', 'hit'])
                 else:
@@ -979,7 +969,7 @@ vcf_output(args.outputFileName, vcfDict, '.')
 # Gene model rescuer module
 if args.rescue_genes:
         verbose_print(args, '### Gene model rescue module start ###')
-        log_comment(args, logName, '### Gene model rescue exon indels ###')
+        log_comment(args, logName, '### Gene model rescue indels ###')
         gmapHits = novel_gmap_align_finder(gmapLoc, nuclDict, minCutoff)
         novelVcf = {}
         for hit in gmapHits:
