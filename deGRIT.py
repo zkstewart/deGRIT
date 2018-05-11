@@ -584,7 +584,7 @@ def validate_args(args):
         if os.path.isfile(args.outputFileName):
                 if args.force:
                         # Temporarily move the file to the current directory and delete the file at the end of program run - this acts as a safety mechanism if someone actually ends up not wanting to overwrite the output file.
-                        tmpFileName = file_name_gen('DEGRIT_backup', '_' + os.path.basename(args.outputFileName))
+                        tmpFileName = file_name_gen('deGRIT_backup', '_' + os.path.basename(args.outputFileName))
                         shutil.move(args.outputFileName, tmpFileName)                                   # I'm going to do this before I alert the user since they might immediately cause a KeyboardInterrupt and I don't know what happens if you do this during shutil.move().
                         print('You\'ve specified that you want to overwrite ' + args.outputFileName)
                         print('Is that right? I\'m going to rename this file to "' + tmpFileName + '" and hold onto the file in the current directory until this program exits.')
@@ -775,7 +775,7 @@ args = p.parse_args()
 
 # Validate arguments and get log file name
 tmpFileName = validate_args(args)
-logName = file_name_gen('DEGRIT_' + os.path.basename(args.genomeFile).rsplit('.', maxsplit=1)[0] + '_run', '.log')
+logName = file_name_gen('deGRIT_' + os.path.basename(args.genomeFile).rsplit('.', maxsplit=1)[0] + '_run', '.log')
 
 # Load genome file as a dictionary
 genomeRecords = SeqIO.to_dict(SeqIO.parse(open(args.genomeFile, 'r'), 'fasta'))
