@@ -998,10 +998,10 @@ if args.rescue_genes:
                         same = 'y'
                         for result in sswResults:
                                 sswIdentity, tmpVcf = indel_location(result[0], result[1], result[5], model, result[3], 1)           # We can use the previous function by just providing exonIndex of 1, len(model[0]) -1 is always == -1 so we always bypass this check.
-                                # Stop processing if we have an alignment with no edits
-                                if tmpVcf == {}:
-                                        same = 'n'
-                                        indelLocations = []
+                                # Stop processing if we have an alignment with no edits
+                                if tmpVcf == {}:
+                                        same = 'n'
+                                        indelLocations = []
                                         break
                                 # If we have edits, add them to our list to check for consensus
                                 if sswIdentity >= minCutoff:
