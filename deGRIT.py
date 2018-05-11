@@ -634,13 +634,22 @@ def log_update(args, logName, inputList):
                         # Format the edit positions for this exon if relevant
                         editPos = '_'
                         if inputList[4] != '.':
-                                editPos = ''
-                                for key, value in inputList[4].items():
-                                        for k2, v2 in value.items():
-                                                editPos += str(k2) + ':' + v2[0] + ','
-                                editPos = editPos[:-1]                                                  # Remove the last comma.
+                                #editPos = ''
+                                #for key, value in inputList[4].items():
+                                #        for k2, v2 in value.items():
+                                #                editPos += str(k2) + ':' + v2[0] + ','
+                                #editPos = editPos[:-1]                                                  # Remove the last comma.
+                                editPos = vcf_line_format(inputList[4])
                         # Write to log file
                         logFile.write('\t'.join([inputList[1][2], inputList[1][3], inputList[1][0][i], matchName, matchCoord, transPos, editPos]) + '\n')
+
+def vcf_line_format(inputVcf):
+        editPos = ''
+        for key, value in inputVcf.items():
+                for k2, v2 in value.items():
+                        editPos += str(k2) + ':' + v2[0] + ','
+        editPos = editPos[:-1]                                                                          # Remove the last comma.
+        return editPos
 
 def log_comment(args, logName, text):
         if args.log:
@@ -669,7 +678,7 @@ def novel_gmap_align_finder(gmapLoc, nuclDict, minCutoff):
         # Compare gmapLoc values to nuclRanges values to find GMAP alignments which don't overlap known genes
         validExons = []
         for key, value in gmapLoc.items():
-                if value[0][7] != 'utg448_pilon_pilon':        ## TESTING
+                if value[0][7] != 'utg11_pilon_pilon':        ## TESTING
                         continue
                 gmapHits = copy.deepcopy(value)
                 # Cull any hits that aren't good enough                                                 # It's important that we're stricter here than we are with the established gene model checking.
@@ -809,7 +818,7 @@ prevBestResult = ''                                                             
 ### CORE PROCESS
 verbose_print(args, '### Main gene improvement module start ###')
 for key, model in nuclDict.items():
-        if 'utg448_pilon_pilon' not in key: ## TESTING
+        if 'utg11_pilon_pilon' not in key: ## TESTING
                 continue
         # Hold onto both the original gene model, as well as the new gene model resulting from indel correction/exon boundary modification
         origModelCoords = []
@@ -876,12 +885,13 @@ for key, model in nuclDict.items():
                         # Check to see if one of these results is identical to the accepted one from the last exon [This holds memory across genes]
                         sswIdentity, tmpVcf, result = acceptedResults[0]                                # Hold onto the best result and overwrite these values if we find the result used for the previous exon/an exact boundary match if relevant.
                         for l in range(len(acceptedResults)):
-                                if acceptedResults[l][2][7] == prevBestResult:                # The final position (exact/encompass/.) might differ, we just want to look at what comes before that.
-                                        sswIdentity, tmpVcf, result = acceptedResults[l]
-                                        break
-                                elif i == 0 or i == len(model[0]) - 1:
+                                if i == 0 or i == len(model[0]) - 1:
                                         if result[9] != 'exact' and acceptedResults[l][2][9] == 'exact':
                                                 sswIdentity, tmpVcf, result = acceptedResults[l]        # This allows us to reprioritise exact matches over encompassing matches if we're looking at a gene boundary.
+                                if acceptedResults[l][2][7] == prevBestResult:
+                                        if acceptedResults[l][2][2] == 'n' or result[2] != 'n':
+                                                sswIdentity, tmpVcf, result = acceptedResults[l]        # If our prevBestMatch has no hyphen, choose this. If our highest scoring result has no hyphen and our prevBestMatch does, then stick with the best result to minimise potentially false changes.
+                                                break
                         prevBestResult = result[7]
                         # Does this result even have any edits?
                         if tmpVcf == {}:
@@ -908,19 +918,21 @@ for key, model in nuclDict.items():
         else:
                 origCDS, newCDS = cds_build(origModelCoords, newModelCoords, model[2], model[1], modelVcf)
                 origProt, newProt = translate_cds(origCDS, newCDS)
+                sizeDiff = abs(round((len(origProt) - len(newProt)) / len(newProt) * 100, 3))
                 # Is the newCDS at least as long as the original CDS without internal stop codons?
                 if len(newProt) > len(origProt):
                         vcfDict = vcf_merge(vcfDict, modelVcf)
                         geneBlocks = geneblocks_update(geneBlocks, model, newModelCoords)
                         # Verbose and log
                         verbose_print(args, 'Looks like we improved this model! [' + model[3] + ']')
-                        log_comment(args, logName, '#' + model[3] + '\tModel length increased\tOld=' + origProt + '\tNew=' + newProt)
+                        log_comment(args, logName, '#' + model[3] + '\tModel length increased\tOriginal model is ' + str(sizeDiff) + '% shorter than new\tOld=' + origProt + '\tNew=' + newProt + '\tAccepted edits=' + vcf_line_format(modelVcf))
                 elif len(newProt) == len(origProt):
                         # How much did we change this model?
                         protAlign = ssw(SeqRecord(Seq(origProt, generic_protein)), SeqRecord(Seq(newProt, generic_protein)))
                         protIdentity = prot_identity(protAlign[0], protAlign[1])
+                        lengthDiff = abs(round((len(origProt) - len(protAlign[0])) / len(protAlign[0]) * 100, 3))       # This lets us know how much of the sequence end is being chopped off. A high identity alignment might still occur in the 5' region but after any modifications it might stop aligning.
                         # Don't save changes if it was just a variant
-                        if protIdentity >= 98.0:                                                        # This choice is arbitrary. Small changes in the sequence are likely to be variants from another member of the same species, large changes might indicate a correction of a small self-limiting frameshift.
+                        if protIdentity >= 98.0 and lengthDiff <= 10.0:                                                 # This choice is arbitrary. Small changes in the sequence are likely to be variants from another member of the same species, large changes might indicate a correction of a frameshift resulting in the same eventual stop position.
                                 # Verbose and log
                                 verbose_print(args, 'Found no edits [' + model[3] + ']')
                                 log_comment(args, logName, '#' + model[3] + '\tNo edits found')
@@ -928,8 +940,8 @@ for key, model in nuclDict.items():
                                 vcfDict = vcf_merge(vcfDict, modelVcf)
                                 geneBlocks = geneblocks_update(geneBlocks, model, newModelCoords)
                                 # Verbose and log
-                                verbose_print(args, 'Length is the same but sequence differs a bit. [' + model[3] + ']')
-                                log_comment(args, logName, '#' + model[3] + '\tModel length is the same\tOld=' + origProt + '\tNew=' + newProt)
+                                verbose_print(args, 'Model length is the same but sequence differs a bit. [' + model[3] + ']')
+                                log_comment(args, logName, '#' + model[3] + '\tModel length is the same\tOld=' + origProt + '\tNew=' + newProt + '\tAccepted edits=' + vcf_line_format(modelVcf))
                 else:
                         # Should we save this modification?
                         ## Check 1: Single substitution that made things worse? (This likely occurs for genes that lack good transcriptional support. Exon boundaries aren't supported well and a transcript alignment proposes an exon that has no frame that lacks stop codons)
@@ -937,29 +949,19 @@ for key, model in nuclDict.items():
                                 verbose_print(args, 'Found no edits [' + model[3] + ']')
                                 log_comment(args, logName, '#' + model[3] + '\tNo edits found')
                         # Log how much shorter the new model is
-                        elif len(newProt) / len(origProt) >= 0.90:
-                                """This check is in place for the same reasons as mentioned above about exon skipping. Sometimes the real gene model should have 
-                                a skipped exon (since EVM/PASA will add in a spurious one to maintain a reading frame in the presence of indel error) which means
-                                our newProt will be slightly shorter than origProt and that is not cause for alarm."""
-                                vcfDict = vcf_merge(vcfDict, modelVcf)
-                                geneBlocks = geneblocks_update(geneBlocks, model, newModelCoords)
-                                # Verbose and log
-                                verbose_print(args, 'We shortened this model, but not by much. It\'s probably skipping an exon [' + model[3] + ']')
-                                log_comment(args, logName, '#' + model[3] + '\tModel length is _slightly_ shorter\tOld=' + origProt + '\tNew=' + newProt)
                         else:
-                                """After testing this program I'm pretty confident that scenarios where this occurs are likely to indicate 1) chimerism that occurred as a result of
-                                indel error, or 2) gene models that are a mix of exons supported by transcripts and exons predicted ab initio. When running this on the test dataset,
-                                it handles all scenarios fine until a gene model marked as MERGED by PASA. Performing BLAST makes it clear that this join was incorrect, and when we fixed indels with
-                                this program, a continuous ORF was not possible between these two genes. Thus, although this gene model did get shorter, this was a good thing.
-                                Originally, I was not going to make any modifications that did shorten the gene model. However, an extensive set of internal validations and rough heuristics are built 
-                                into the program and I have tested it to a degree that I am confident enough to unlock this section and let the program make the edits it thinks it should. 
-                                I will, however, make these cases clear in the logging function so that manual validation can occur to make sure it's not messing up any gene models, 
-                                which is the #1 goal of this program - do not make _anything_ worse."""
                                 vcfDict = vcf_merge(vcfDict, modelVcf)
                                 geneBlocks = geneblocks_update(geneBlocks, model, newModelCoords)
                                 # Verbose and log
-                                verbose_print(args, 'I shortened this model a lot. Was this gene a chimer, or does it involve ab initio predicted exons? [' + model[3] + ']')
-                                log_comment(args, logName, '#' + model[3] + '\tModel length is _quite a bit_ shorter\tOld=' + origProt + '\tNew=' + newProt)
+                                if sizeDiff <= 10.0:
+                                        verbose_print(args, 'I shortened this model, but not by much. It\'s probably skipping an exon [' + model[3] + ']')
+                                        log_comment(args, logName, '#' + model[3] + '\tModel length decreased _slightly_\tOriginal model is ' + str(sizeDiff) + '% longer than new\tOld=' + origProt + '\tNew=' + newProt + '\tAccepted edits=' + vcf_line_format(modelVcf))
+                                elif sizeDiff <= 60.0:
+                                        verbose_print(args, 'I shortened this model a lot. Was this gene a chimer, or does it involve ab initio predicted exons? [' + model[3] + ']')
+                                        log_comment(args, logName, '#' + model[3] + '\tModel length decreased _quite a bit_\tOriginal model is ' + str(sizeDiff) + '% longer than new\tOld=' + origProt + '\tNew=' + newProt + '\tAccepted edits=' + vcf_line_format(modelVcf))
+                                else:
+                                        verbose_print(args, 'I shortened this model _dramatically_. Check this out manually [' + model[3] + ']')
+                                        log_comment(args, logName, '#' + model[3] + '\tModel length decreased _dramatically_\tOriginal model is ' + str(sizeDiff) + '% longer than new\tOld=' + origProt + '\tNew=' + newProt + '\tAccepted edits=' + vcf_line_format(modelVcf))
 
 # Check for probable gene joins
 if args.verbose or args.log:
@@ -967,9 +969,9 @@ if args.verbose or args.log:
         verbose_print(args, '### Probable gene merges ###\n' + '\n'.join(joins))
         log_comment(args, logName, '### Probable gene merges ###\n' + '\n'.join(joins))
         """This function is only capable of finding gene models that join over shared exons. Gene models that join 
-        through introns should be discovered by EVM/PASA but it's too difficult/annoying to try to find these scenarios
-        in this program. This at least provides a nice way to validate these changes using manual annotation to see if things
-        are going according to plan"""
+        through introns should be discovered by EVM/PASA but it's beyond the capacity of this program to try to find
+        these scenarios. This at least provides a nice way to validate these changes manually to see if things
+        are going according to plan."""
 
 # Create output VCF-like file                                                                                   # It's a really abbreviated VCF style format, but it's enough to make it easy to parse and perform genome edits.
 vcf_output(args.outputFileName, vcfDict, '.')
