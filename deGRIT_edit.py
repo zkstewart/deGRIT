@@ -127,10 +127,10 @@ editEvents = [0,0,0]                                                            
 numContigs = [0,0]                                                              # Format is [total contig num, edited contig num]
 for record in genomeRecords:
         seqid = record.id
-        sequence = str(record.seq)
+        sequence = str(record.seq).upper()
         if seqid in vcfDict:
                 sequence, editEvents = vcf_edit(vcfDict, seqid, sequence, editEvents)
-                genome_output(args, seqid, sequence)
+                genome_output(args, seqid, sequence.upper())
                 numContigs[0] += 1
                 numContigs[1] += 1
         else:
