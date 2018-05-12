@@ -101,7 +101,7 @@ p = argparse.ArgumentParser(description=usage)
 p.add_argument("-gen", "--genomefile", dest="genomeFile",
                help="Input genome contig fasta file name")
 p.add_argument("-e", "--editFile", dest="editFile",
-               help="Output VCF-like edit file name")
+               help="Input VCF-like edit file name")
 p.add_argument("-o", "--output", dest="outputFileName",
                help="Output edited genome file name")
 # Opts
@@ -126,9 +126,9 @@ vcfDict = vcf_parser(args)
 editEvents = [0,0,0]                                                            # Provide some information to the user here for convenience [format is deletions, substitutions, insertions].
 numContigs = [0,0]                                                              # Format is [total contig num, edited contig num]
 for record in genomeRecords:
-        seqid = record.description
+        seqid = record.id
         sequence = str(record.seq)
-        if record.id in vcfDict:
+        if seqid in vcfDict:
                 sequence, editEvents = vcf_edit(vcfDict, seqid, sequence, editEvents)
                 genome_output(args, seqid, sequence)
                 numContigs[0] += 1
