@@ -688,8 +688,6 @@ def novel_gmap_align_finder(gmapLoc, nuclDict, minCutoff):
                         else:
                                 sepHits[hit[7]].append(hit)
                 for contigid, gmapHits in sepHits.items():
-                        if contigid != 'utg0_pilon_pilon':        ## TESTING
-                                continue
                         # Do we have enough hits to suggest there might be a defined exon here?
                         if len(gmapHits) < 2:                                                                   # Because of how we indexed our GMAP alignments, we can easily tell if there are multiple sequences hitting the exact same coordinates. Convenient!
                                 continue
@@ -826,8 +824,6 @@ prevBestResult = ''                                                             
 ### CORE PROCESS
 verbose_print(args, '### Main gene improvement module start ###')
 for key, model in nuclDict.items():
-        if 'utg0_pilon_pilon' not in key:
-                continue
         # Hold onto both the original gene model, as well as the new gene model resulting from indel correction/exon boundary modification
         origModelCoords = []
         newModelCoords = []
