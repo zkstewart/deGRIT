@@ -14,11 +14,13 @@
 
 # Load packages
 import re, os, argparse, copy, warnings, shutil
+import pandas as pd
 from Bio import SeqIO
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 from Bio.Alphabet import generic_dna, generic_protein
 from skbio.alignment import StripedSmithWaterman
+from ncls import NCLS
 
 ### Various functions to perform operations throughout the program
 def reverse_comp(seq):
@@ -30,52 +32,53 @@ def reverse_comp(seq):
         reversedSeq = reversedSeq.replace('g', 'C')
         return reversedSeq
 
-def gmap_exon_finder(gmapLoc, model, coordIndex, processType):
-        dictEntries = []
+def gmap_exon_finder(ncls, gmapLoc, model, coordIndex, processType):
         start = int(model[0][coordIndex].split('-')[0])
         stop = int(model[0][coordIndex].split('-')[1])
-        if processType == 'boundary':
-                dictEntries = [gmapLoc[key] for key in gmapLoc if start in key or stop in key]          # Getting start OR stop means we just grab onto anything perfectly matching one of the boundaries.
-        else:
-                dictEntries = [gmapLoc[key] for key in gmapLoc if start in key and stop in key]         # Getting start AND stop means it must equal or encompass our current exon.
-        dictEntries = copy.deepcopy(dictEntries)                                                        # I'm not 100% sure this is necessary, but I've found deepcopies to be necessary for other functions similar to this.
+        overlaps = ncls.find_overlap(start, stop)                                                       # Although our ncls is 1-based, find_overlap acts as a range and is thus 0-based. We need to +1 to the stop to offset this.
+        dictEntries = []
+        for result in overlaps:
+                if processType == 'boundary':
+                        if result[0] == start or result[1] == stop+1:                                   # Remember that we made the ncls act 1-based for the purpose of indexing. However, when you retrieve results, you get a tuple like (start, stop, index).
+                                dictEntries.append(gmapLoc[result[2]])                                  # In this tuple, stop is equal to the number you used to build the ncls. Thus, it actually equals stop + 1 now. It's a bit annoying, but it's how we need to do it to get true ranges for intersection.
+                else:
+                        hitRange = range(result[0], result[1])                                          # We already made the ncls 1-based, so we don't need to do anything here since range will naturally "remove" the last number.
+                        if start in hitRange and stop in hitRange:
+                                dictEntries.append(gmapLoc[result[2]])
+        dictEntries = copy.deepcopy(dictEntries)                                                        # Any time we're deleting things from a section of a dictionary we need to build a deepcopy to keep the original dictionary intact.
         # Narrow down our dictEntries to hits on the same contig
-        for j in range(len(dictEntries)):                                                               # Remember: gmapLoc = [[contigStart, contigStop, transStart, transStop, orient, geneID, identity, contigID]].
-                for k in range(len(dictEntries[j])-1, -1, -1):                                          # Loop through in reverse so we can delete entries without messing up the list.
-                        if dictEntries[j][k][7] != model[2]:
-                                del dictEntries[j][k]
-        while [] in dictEntries:
-                del dictEntries[dictEntries.index([])]
-        # Flatten our list
-        outList = []
-        for entry in dictEntries:
-                for subentry in entry:
-                        outList.append(subentry + ['.'])                                                # This is to accommodate the below changes with 'exact'/'encompass'. Boundary matches are really annoying to handle but the behaviour is necessary, unfortunately.
-        # Extra processing if looking at first and last exons
+        for k in range(len(dictEntries)-1, -1, -1):                                                     # Remember: gmapLoc = [[contigStart, contigStop, transStart, transStop, orient, geneID, identity, contigID]]. Loop through in reverse so we can delete entries without messing up the list.
+                if dictEntries[k][7] != model[2]:
+                        del dictEntries[k]
+        # Provide extra information for boundary matches for reprioritisation later in the program
         if processType == 'boundary':
                 encompass = []
                 exact = []
                 # Narrow down this list further to make sure we're only holding onto perfect boundary matches OR fully encompassing matches
-                for n in range(len(outList)-1, -1, -1):
-                        if outList[n][0] == start or outList[n][1] == stop:
-                                exact.append(outList[n][:-1] + ['exact'])                               # Get rid of the empty '.' and replace it
-                        elif outList[n][0] <= start and outList[n][1] >= stop:                          # This wasn't previously in the program, but it was noticed that boundary and internal handling was too different and causing problems. This should help to equalise their behaviour for the most part.
-                                encompass.append(outList[n][:-1] + ['encompass'])
+                for n in range(len(dictEntries)-1, -1, -1):
+                        if dictEntries[n][0] == start or dictEntries[n][1] == stop:
+                                exact.append(dictEntries[n] + ['exact'])
+                        else:                          # This wasn't previously in the program, but it was noticed that boundary and internal handling was too different and causing problems. This should help to equalise their behaviour for the most part.
+                                encompass.append(dictEntries[n] + ['encompass'])
                 outList = exact + encompass                                                             # We can use this extra info of 'exact' or 'encompass' for prioritising exact matches, but allowing encompassing matches to be accepted if we find no exact matches/for memory across genes. This was needed to handle a few scenarios.
+        else:
+                outList = []
+                for entry in dictEntries:
+                        outList.append(entry + ['.'])                                                   # This is to accommodate the 'exact'/'encompass' behaviour handling. Boundary matches are really annoying to handle but the behaviour is necessary, unfortunately.
         # Sort and return list
-        outList.sort(key = lambda x: (int(x[6]), x[2] - x[1]), reverse = True)                          # Provides a sorted list where, at the top, we have the longest and best matching hits.
+        outList.sort(key = lambda x: (int(x[6]), x[1] - x[0]), reverse = True)                          # Provides a sorted list where, at the top, we have the longest and best matching hits.
         return outList
 
-def check_future(gmapMatches, model, i):
+def check_future(ncls, gmapMatches, model, i):
         # Process if there is actually another downstream exon
         if i != len(model[0]) - 1:
                 # Grab the GMAP matches for the future exon
                 if i+1 == 0 or i+1 == len(model[0]) - 1:
-                        futureMatches = gmap_exon_finder(gmapLoc, model, i+1, "boundary")
+                        futureMatches = gmap_exon_finder(ncls, gmapLoc, model, i+1, "boundary")
                 else:
-                        futureMatches = gmap_exon_finder(gmapLoc, model, i+1, "internal")
+                        futureMatches = gmap_exon_finder(ncls, gmapLoc, model, i+1, "internal")
                         if futureMatches == []:                                                         # If we can't find an encompassing match for an internal exon, there's a good chance that PASA has artificially extended this exon to correct for an indel.
-                                futureMatches = gmap_exon_finder(gmapLoc, model, i+1, "boundary")
+                                futureMatches = gmap_exon_finder(ncls, gmapLoc, model, i+1, "boundary")
                 # Get futureMatches IDs
                 futureIDs = []
                 for match in futureMatches:
@@ -490,6 +493,51 @@ def gmap_parse_ranges(gmapFile, cutoff):
                                 gmapLoc[indexRange].append([contigStart, contigStop, transStart, transStop, orient, geneID, identity, contigID])
         return gmapLoc
 
+def gmap_parse_ncls(gmapFile, cutoff):
+        gmapLoc = {}
+        starts = []
+        ends = []
+        ids = []
+        ongoingCount = 0
+        with open(gmapFile, 'r') as fileIn:
+                for line in fileIn:
+                        # Skip unneccessary lines
+                        if line.startswith('#'):
+                                continue
+                        sl = line.split('\t')
+                        if sl[2] != 'cDNA_match':                                                        # I don't think any other type of line is present in a GMAP gff3 file produced with PASA's settings, but this could potentially future proof the script?
+                                continue
+                        # Get details from line including start, stop, and orientation
+                        contigID = sl[0]
+                        if not sl[8].startswith('ID=blat.proc'):                                        # May as well make the code compatible with BLAT.
+                                geneID = sl[8].split(';')[1][5:]                                        # Start from 5 to get rid of 'Name='.
+                        else:
+                                geneID = sl[8].split(';')[1].split()[0][7:]                             # Start from 7 to get rid of 'Target='.
+                        contigStart = int(sl[3])
+                        contigStop = int(sl[4])
+                        identity = float(sl[5])
+                        if identity < cutoff:                                                           # Speed up program by only holding onto hits that will pass our cutoff check.
+                                continue
+                        orient = sl[6]
+                        if not sl[8].startswith('ID=blat.proc'):
+                                transStart = int(sl[8].split(';')[2].split()[1])
+                                transStop = int(sl[8].split(';')[2].split()[2])
+                        else:
+                                transStart = int(sl[8].split(';')[1].split()[1])
+                                transStop = int(sl[8].split(';')[1].split()[2])
+                        # Add to our NCLS                                                               # We index using ranges since it provides an easy way to retrieve GMAP matches by coordinates. Since these coordinates aren't unique, we filter any results returned by their contig ID.
+                        starts.append(contigStart)
+                        ends.append(contigStop+1)                                                       # NCLS indexes 0-based, so +1 to make this more logically compliant with gff3 1-based system.
+                        ids.append(ongoingCount)
+                        gmapLoc[ongoingCount] = [contigStart, contigStop, transStart, transStop, orient, geneID, identity, contigID]
+                        ongoingCount += 1
+        # Build the NCLS object
+        starts = pd.Series(starts)
+        ends = pd.Series(ends)
+        ids = pd.Series(ids)
+        ncls = NCLS(starts.values, ends.values, ids.values)
+        return ncls, gmapLoc
+
 def cdna_parser(gffFile):                                                                               # I've essentially crammed the gff3_to_fasta.py script in here since we need to parse the gff3 file to get the CDS regions to perform the CDS merging and find out if we get a proper gene model.
         def group_process(currGroup):
                 full_mrnaGroup = []                                                                     # This will hold processed mRNA positions.
@@ -767,10 +815,8 @@ def gmap_parse_models(args, cutoff, transRecords):
                 if check4pass == 'n':
                         continue
                 # All checks pass successfully: it's likely that this should be a gene model, but it isn't. Let's check it for indels...
-                #if value[2] not in curatedGmapModels:
-                curatedGmapModels[value[3]] = value                                                     # Format it to be the same as nuclDict now.
-                #else:
-                        #curatedGmapModels[value[2]].append(value)
+                value[3] = key                                                                          # This is because the main part of the program uses model[3] as the gene name, and the transcript ID itself may be redundant but the GMAP .paths shouldn't be.
+                curatedGmapModels[key] = value                                                          # Format it to be the same as nuclDict now.
         return curatedGmapModels
 
 def reindex_nucldict(nuclDict):
@@ -786,13 +832,18 @@ def reindex_nucldict(nuclDict):
                                 nuclRanges[coordRange].append([value[2], value[3]])
         return nuclRanges
 
-def novel_gmap_align_finder(gmapLoc, nuclDict, minCutoff):
+def novel_gmap_align_finder(ncls, gmapLoc, nuclDict, minCutoff):
         # Re-index our nuclDict into a format capable of comparison to our gmapLoc dictionary
         nuclRanges = reindex_nucldict(nuclDict)
         # Compare gmapLoc values to nuclRanges values to find GMAP alignments which don't overlap known genes
         validExons = []
         for key, value in gmapLoc.items():
-                gmapHits = copy.deepcopy(value)
+                overlaps = ncls.find_overlap(value[0], value[1]+1)
+                dictEntries = []
+                for result in overlaps:
+                        if result[0] == value[0] and result[1] == value[1]+1:                                    # Remember that we made the ncls act 1-based for the purpose of indexing. However, when you retrieve results, you get a tuple like (start, stop, index).
+                                dictEntries.append(gmapLoc[result[2]]) 
+                gmapHits = copy.deepcopy(dictEntries)
                 # Cull any hits that aren't good enough                                                 # It's important that we're stricter here than we are with the established gene model checking.
                 for x in range(len(gmapHits)-1,-1,-1):
                         if gmapHits[x][6] < minCutoff:
@@ -809,8 +860,8 @@ def novel_gmap_align_finder(gmapLoc, nuclDict, minCutoff):
                         if len(gmapHits) < 2:                                                                   # Because of how we indexed our GMAP alignments, we can easily tell if there are multiple sequences hitting the exact same coordinates. Convenient!
                                 continue
                         # Find out if this region already overlaps a known gene model
-                        start = min(key)
-                        stop = max(key)
+                        start = value[0]
+                        stop = value[1]                                                                         # NuclRanges is 1-base offset already so this works fine.
                         overlaps = [nuclRanges[key_range] for key_range in nuclRanges if start in key_range or stop in key_range]
                         overlaps = copy.deepcopy(overlaps)
                         # Narrow down our overlaps to hits on the same contig
@@ -927,7 +978,7 @@ nuclDict = cdna_parser(args.gff3File)
 verbose_print(args, 'Parsed the annotations gff3 file')
 
 # Parse the gmap alignment file for transcript alignment locations
-gmapLoc = gmap_parse_ranges(args.gmapFile, gmapCutoff)
+ncls, gmapLoc = gmap_parse_ncls(args.gmapFile, gmapCutoff)
 verbose_print(args, 'Parsed GMAP gff3 file')
 
 # Parse the transcriptome file
@@ -950,6 +1001,8 @@ for z in range(len([nuclDict, gmapRescueDict])):
         elif z == 1 and args.rescue_genes:
                 verbose_print(args, '### Gene rescue module start ###')
         for key, model in [nuclDict, gmapRescueDict][z].items():
+                if 'utg0_pilon_pilon' not in key:
+                        continue
                 # Hold onto both the original gene model, as well as the new gene model resulting from indel correction/exon boundary modification
                 origModelCoords = []
                 newModelCoords = []
@@ -966,11 +1019,11 @@ for z in range(len([nuclDict, gmapRescueDict])):
                         matches to portions of the exon but not the whole exon, whereas I had other exons which perfectly matched the boundaries but
                         had ~90-97% identity according to GMAP)"""
                         if i == 0 or i == len(model[0]) - 1:
-                                gmapMatches = gmap_exon_finder(gmapLoc, model, i, "boundary")
+                                gmapMatches = gmap_exon_finder(ncls, gmapLoc, model, i, "boundary")
                         else:
-                                gmapMatches = gmap_exon_finder(gmapLoc, model, i, "internal")
+                                gmapMatches = gmap_exon_finder(ncls, gmapLoc, model, i, "internal")
                                 if gmapMatches == []:                                                           # If we can't find an encompassing match for an internal exon, there's a good chance that PASA has artificially extended this exon to correct for an indel.
-                                        gmapMatches = gmap_exon_finder(gmapLoc, model, i, "boundary")
+                                        gmapMatches = gmap_exon_finder(ncls, gmapLoc, model, i, "boundary")
                         if gmapMatches == []:
                                 origModelCoords.append(model[0][i])                                             # If there is no transcript support for this exon, it might be a spurious attempt by PASA/EVM to keep the gene inframe. Thus, we'll only save these coords under the origModel.
                                 # Log
@@ -978,7 +1031,7 @@ for z in range(len([nuclDict, gmapRescueDict])):
                                 continue
                         gmapMatches = gmap_curate(gmapMatches, model, i)
                         # Look into the future: cull any GMAP matches if they don't show up as a match in the next exon too
-                        gmapMatches = check_future(gmapMatches, model, i)
+                        gmapMatches = check_future(ncls, gmapMatches, model, i)
                         # Continue if no GMAP matches
                         if gmapMatches == []:
                                 origModelCoords.append(model[0][i])
@@ -1123,7 +1176,7 @@ vcf_output(args.outputFileName, vcfDict, '.')
 if args.rescue_exons:
         verbose_print(args, '### Exon rescue module start ###')
         log_comment(args, logName, '### Exon rescue indels ###')
-        gmapHits = novel_gmap_align_finder(gmapLoc, nuclDict, minCutoff)
+        gmapHits = novel_gmap_align_finder(ncls, gmapLoc, nuclDict, minCutoff)
         novelVcf = {}
         for hit in gmapHits:
                 # Find the best GMAP match by SSW alignment score
