@@ -88,18 +88,15 @@ def check_future(gmapMatches, model, i):
                 return outMatches
         return gmapMatches
 
-def gmap_curate(minCutoff, gmapMatches, model, coordIndex):
+def gmap_curate(gmapMatches, model, coordIndex):
         coords = model[0][coordIndex].split('-')
         bestMatches = []
-        # Remove spurious matches and detect perfect exon boundary matches
+        # Detect perfect exon boundary matches
         for x in range(len(gmapMatches)-1,-1,-1):
-                """By putting this before the minCutoff we can ensure that, in the case that we have perfect boundary matches but with
+                """By putting this check in we can ensure that, in the case that we have perfect boundary matches but with
                 lower identity we can prioritise these above 'better' matches which don't respect exon boundaries"""
                 if gmapMatches[x][0] == int(coords[0]) and gmapMatches[x][1] == int(coords[1]):
                         bestMatches.append(gmapMatches[x])
-                elif gmapMatches[x][6] < minCutoff:
-                        del gmapMatches[x]
-                   
         # Return the best match if we can or, if not, just return any matches that meet our curation conditions
         if bestMatches == []:
                 return gmapMatches
@@ -108,7 +105,7 @@ def gmap_curate(minCutoff, gmapMatches, model, coordIndex):
                 but the other, despite 98% identity, still had a better SSW score simply because it was longer. I could normalise SSW score to handle this, but this is probably
                 just as good and it should reduce the computational time of the script.
                 Also important consideration: if there is a GMAP alignment which matches this exon's boundaries perfectly, it provides solid evidence that this exon boundary
-                should not be changed, so we can limit our consideration to these matches"""
+                should not be changed, so we can limit our consideration to these matches."""
                 return bestMatches
 
 def patch_seq_extract(match, model):
@@ -457,7 +454,7 @@ def gene_overlap_validation(geneBlocks):
         return outlist
 
 ## CORE FUNCTIONS ##
-def gmap_parse_ranges(gmapFile):
+def gmap_parse_ranges(gmapFile, cutoff):
         gmapLoc = {}
         with open(gmapFile, 'r') as fileIn:
                 for line in fileIn:
@@ -475,8 +472,10 @@ def gmap_parse_ranges(gmapFile):
                                 geneID = sl[8].split(';')[1].split()[0][7:]                             # Start from 7 to get rid of 'Target='.
                         contigStart = int(sl[3])
                         contigStop = int(sl[4])
-                        indexRange = range(contigStart, contigStop+1)                                   # Make it 1-based.
                         identity = float(sl[5])
+                        if identity < cutoff:                                                           # Speed up program by only holding onto hits that will pass our cutoff check.
+                                continue
+                        indexRange = range(contigStart, contigStop+1)                                   # Make it 1-based.
                         orient = sl[6]
                         if not sl[8].startswith('ID=blat.proc'):
                                 transStart = int(sl[8].split(';')[2].split()[1])
@@ -681,26 +680,36 @@ def novel_gmap_align_finder(gmapLoc, nuclDict, minCutoff):
                 for x in range(len(gmapHits)-1,-1,-1):
                         if gmapHits[x][6] < minCutoff:
                                 del gmapHits[x]
-                # Do we have enough hits to suggest there might be a defined exon here?
-                if len(gmapHits) < 2:                                                                   # Because of how we indexed our GMAP alignments, we can easily tell if there are multiple sequences hitting the exact same coordinates. Convenient!
-                        continue
-                # Find out if this region already overlaps a known gene model
-                start = min(key)
-                stop = max(key)
-                overlaps = [nuclRanges[key_range] for key_range in nuclRanges if start in key_range or stop in key_range]
-                overlaps = copy.deepcopy(overlaps)
-                # Narrow down our overlaps to hits on the same contig
-                for j in range(len(overlaps)):
-                        for k in range(len(overlaps[j])-1, -1, -1):
-                                if overlaps[j][k][0] != gmapHits[0][7]:
-                                        del overlaps[j][k]
-                while [] in overlaps:
-                        del overlaps[overlaps.index([])]
-                # Do we have any overlaps?
-                if overlaps != []:                                                                      # This list won't be empty if it overlaps an established gene model.
-                        continue
-                else:
-                        validExons.append(gmapHits)
+                # Separate any hits from different contigs (very improbable we have exact matches in different contigs, but it is theoretically possible)
+                sepHits = {}
+                for hit in gmapHits:
+                        if hit[7] not in sepHits:
+                                sepHits[hit[7]] = [hit]
+                        else:
+                                sepHits[hit[7]].append(hit)
+                for contigid, gmapHits in sepHits.items():
+                        if contigid != 'utg0_pilon_pilon':        ## TESTING
+                                continue
+                        # Do we have enough hits to suggest there might be a defined exon here?
+                        if len(gmapHits) < 2:                                                                   # Because of how we indexed our GMAP alignments, we can easily tell if there are multiple sequences hitting the exact same coordinates. Convenient!
+                                continue
+                        # Find out if this region already overlaps a known gene model
+                        start = min(key)
+                        stop = max(key)
+                        overlaps = [nuclRanges[key_range] for key_range in nuclRanges if start in key_range or stop in key_range]
+                        overlaps = copy.deepcopy(overlaps)
+                        # Narrow down our overlaps to hits on the same contig
+                        for j in range(len(overlaps)):
+                                for k in range(len(overlaps[j])-1, -1, -1):
+                                        if overlaps[j][k][0] != gmapHits[0][7]:
+                                                del overlaps[j][k]
+                        while [] in overlaps:
+                                del overlaps[overlaps.index([])]
+                        # Do we have any overlaps?
+                        if overlaps != []:                                                                      # This list won't be empty if it overlaps an established gene model.
+                                continue
+                        else:
+                                validExons.append(gmapHits)
         return validExons
 
 def rescue_log_update(args, logName, inputList):
@@ -777,22 +786,6 @@ args = p.parse_args()
 tmpFileName = validate_args(args)
 logName = file_name_gen('deGRIT_' + os.path.basename(args.genomeFile).rsplit('.', maxsplit=1)[0] + '_run', '.log')
 
-# Load genome file as a dictionary
-genomeRecords = SeqIO.to_dict(SeqIO.parse(open(args.genomeFile, 'r'), 'fasta'))
-verbose_print(args, 'Loaded genome fasta file')
-
-# Parse the gff3 file
-nuclDict = cdna_parser(args.gff3File)
-verbose_print(args, 'Parsed the annotations gff3 file')
-
-# Parse the gmap alignment file for transcript alignment locations
-gmapLoc = gmap_parse_ranges(args.gmapFile)
-verbose_print(args, 'Parsed GMAP gff3 file')
-
-# Parse the transcriptome file
-transRecords = SeqIO.to_dict(SeqIO.parse(open(args.transcriptomeFile, 'r'), 'fasta'))
-verbose_print(args, 'Loaded transcriptome fasta file')
-
 # Declare values needed for processing
 minCutoff = 97                                                                                          # I don't think this value should be modifiable - the program is built around this value, increasing it will result in finding very few results, and decreasing it will likely result in false changes.
 gmapCutoff = 95
@@ -807,6 +800,24 @@ Additionally, I am pretty sure I found a case where GMAP's identity score was no
 but in reality it was 100% identical. I've noticed a handful of weird things GMAP does (hence why I 
 align my genomic exon segment against the whole transcript, GMAP's coordinates aren't trustworthy..)
 so I try to limit my trust in the program's accuracy."""
+
+# Load genome file as a dictionary
+genomeRecords = SeqIO.to_dict(SeqIO.parse(open(args.genomeFile, 'r'), 'fasta'))
+verbose_print(args, 'Loaded genome fasta file')
+
+# Parse the gff3 file
+nuclDict = cdna_parser(args.gff3File)
+verbose_print(args, 'Parsed the annotations gff3 file')
+
+# Parse the gmap alignment file for transcript alignment locations
+gmapLoc = gmap_parse_ranges(args.gmapFile, gmapCutoff)
+verbose_print(args, 'Parsed GMAP gff3 file')
+
+# Parse the transcriptome file
+transRecords = SeqIO.to_dict(SeqIO.parse(open(args.transcriptomeFile, 'r'), 'fasta'))
+verbose_print(args, 'Loaded transcriptome fasta file')
+
+# Declare values needed to retain results across loops and into the gene rescue module
 vcfDict = {}                                                                                            # This dictionary will hold onto values in a style that is similar to VCF, making output and parsing easier.
 geneBlocks = {}                                                                                         # This dictionary serves as a form of validation. By holding onto model starts/stops, we'll be able to check for overlap which will tell us if gene models will end up merged in the reannotation.
 polishedRanges = {}
@@ -815,6 +826,8 @@ prevBestResult = ''                                                             
 ### CORE PROCESS
 verbose_print(args, '### Main gene improvement module start ###')
 for key, model in nuclDict.items():
+        if 'utg0_pilon_pilon' not in key:
+                continue
         # Hold onto both the original gene model, as well as the new gene model resulting from indel correction/exon boundary modification
         origModelCoords = []
         newModelCoords = []
@@ -841,7 +854,7 @@ for key, model in nuclDict.items():
                         # Log
                         log_update(args, logName, [key, model, i, gmapMatches, '.', '.'])
                         continue
-                gmapMatches = gmap_curate(gmapCutoff, gmapMatches, model, i)
+                gmapMatches = gmap_curate(gmapMatches, model, i)
                 # Look into the future: cull any GMAP matches if they don't show up as a match in the next exon too
                 gmapMatches = check_future(gmapMatches, model, i)
                 # Continue if no GMAP matches
