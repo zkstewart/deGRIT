@@ -660,8 +660,120 @@ def verbose_print(args, text):
         if args.verbose:
                 print(text)
 
-## New gene model rescuer functions
-def novel_gmap_align_finder(gmapLoc, nuclDict, minCutoff):
+## Gene model and exon rescue functions
+def gmap_parse_models(args, cutoff, transRecords):
+        if args.rescue_genes == False:
+                return {}
+        # Re-index our nuclDict into a format capable of comparison to our gmapLoc dictionary
+        nuclRanges = reindex_nucldict(nuclDict)
+        # Parse the gmapFile and build models
+        tmpGmapModels = {}
+        with open(args.gmapFile, 'r') as fileIn:
+                for line in fileIn:
+                        # Skip unneccessary lines
+                        if line.startswith('#'):
+                                continue
+                        sl = line.split('\t')
+                        if sl[2] != 'cDNA_match':                                                       # I don't think any other type of line is present in a GMAP gff3 file produced with PASA's settings, but this could potentially future proof the script?
+                                continue
+                        # Get details from line
+                        contigID = sl[0]
+                        pathID = sl[8].split(';')[0][3:]                                                # Start from 3 to get rid of 'ID='.
+                        if not sl[8].startswith('ID=blat.proc'):                                        # May as well make the code compatible with BLAT.
+                                geneID = sl[8].split(';')[1][5:]                                        # Start from 5 to get rid of 'Name='.
+                        else:
+                                geneID = sl[8].split(';')[1].split()[0][7:]                             # Start from 5 to get rid of 'Target='.
+                        contigStart = sl[3]
+                        contigStop = sl[4]
+                        identity = float(sl[5])
+                        orient = sl[6]
+                        # Skip models that won't be accepted
+                        if identity < cutoff:
+                                tmpGmapModels[pathID] = 'not_good'
+                                continue
+                        if pathID in tmpGmapModels:
+                                if tmpGmapModels[pathID] == 'not_good':
+                                        continue
+                        # Get further details if this model is still OK
+                        if not sl[8].startswith('ID=blat.proc'):
+                                transStart = sl[8].split(';')[2].split()[1]
+                                transStop = sl[8].split(';')[2].split()[2]
+                        else:
+                                transStart = sl[8].split(';')[1].split()[1]
+                                transStop = sl[8].split(';')[1].split()[2]
+                        # Add to our dictionary                                                         # We index using ranges since it provides an easy way to retrieve GMAP matches by coordinates. Since these coordinates aren't unique, we filter any results returned by their contig ID.
+                        if pathID not in tmpGmapModels:
+                                tmpGmapModels[pathID] = [[contigStart + '-' + contigStop], orient, contigID, geneID, [transStart + '-' + transStop]]
+                        else:
+                                tmpGmapModels[pathID][0].append(contigStart + '-' + contigStop)
+                                tmpGmapModels[pathID][4].append(transStart + '-' + transStop)
+        # Curate our potential gene models through various checks
+        curatedGmapModels = {}
+        for key, value in tmpGmapModels.items():
+                ## Check 1: Was this marked as 'not_good' earlier? (this means the gene model contained at least one exon which didn't meet out cutoff)
+                if value == 'not_good':
+                        continue
+                ## Check 2: Does this model have more than 1 exon? (single exon genes may be pseudogenes)
+                if len(value[0]) < 2:
+                        continue
+                ## Check 3: Does the full CDS align to the genome? (fragmentary alignments mean this CDS doesn't belong to this genomic region or that the genome sequence itself is misassembled; in both cases, we can't annotate this gene model correctly)
+                # Get the transcript details
+                record = transRecords[value[3]]
+                seq = str(record.seq)
+                seqSet = set(range(1, len(seq)+1))
+                # Format the alignment details
+                alignSet = set()
+                for coord in value[4]:
+                        coordSplit = list(map(int, coord.split('-')))
+                        alignSet = alignSet.union(set(range(coordSplit[0], coordSplit[1] + 1)))
+                # Check for overall number of gaps, and check for long stretches of gaps
+                gaps = list(seqSet - alignSet)
+                gaps.sort()
+                gapPerc = len(gaps) / len(seq)
+                if gapPerc >= 0.05:                                                                     # Missing 5% of the sequence isn't much, but it's enough to raise concern.
+                        continue
+                gapStretch = 1
+                check3pass = 'y'
+                for x in range(len(gaps)-1):
+                        if gaps[x] + 1 == gaps[x+1]:
+                                gapStretch += 1
+                        else:
+                                gapStretch = 1
+                        if gapStretch >= 5:                                                             # A 5bp gap also isn't much, but we don't want to make a "putative gene model" which doesn't match the transcript nearly perfectly.
+                                check3pass = 'n'
+                                break
+                if check3pass == 'n':
+                        continue
+                ## Check 4: Does this model contain any exons that match against the current gene annotation? (these gene models are meant to be entirely novel, if they overlap current models then we don't want to consider them for rescuing.
+                check4pass = 'y'
+                for x in range(len(value[0])):
+                        coordSplit = list(map(int, value[0][x].split('-')))
+                        coordRange = range(coordSplit[0], coordSplit[1])
+                        overlaps = [nuclRanges[key_range] for key_range in nuclRanges if list(range(max(coordRange[0], key_range[0]), min(coordRange[-1], key_range[-1])+1)) != []]  # https://stackoverflow.com/questions/6821156/how-to-find-range-overlap-in-python
+                        overlaps = copy.deepcopy(overlaps)
+                        # Narrow down our overlaps to hits on the same contig
+                        for j in range(len(overlaps)):
+                                for k in range(len(overlaps[j])-1, -1, -1):
+                                        if overlaps[j][k][0] != value[2]:
+                                                del overlaps[j][k]
+                        while [] in overlaps:
+                                del overlaps[overlaps.index([])]
+                        # Do we have any overlaps?
+                        if overlaps == []:                                                              # This list won't be empty if it overlaps an established gene model.
+                                continue
+                        else:
+                                check4pass = 'n'
+                                break
+                if check4pass == 'n':
+                        continue
+                # All checks pass successfully: it's likely that this should be a gene model, but it isn't. Let's check it for indels...
+                #if value[2] not in curatedGmapModels:
+                curatedGmapModels[value[3]] = value                                                     # Format it to be the same as nuclDict now.
+                #else:
+                        #curatedGmapModels[value[2]].append(value)
+        return curatedGmapModels
+
+def reindex_nucldict(nuclDict):
         # Re-index our nuclDict into a format capable of comparison to our gmapLoc dictionary
         nuclRanges = {}
         for key, value in nuclDict.items():
@@ -672,6 +784,11 @@ def novel_gmap_align_finder(gmapLoc, nuclDict, minCutoff):
                                 nuclRanges[coordRange] = [[value[2], value[3]]]
                         else:
                                 nuclRanges[coordRange].append([value[2], value[3]])
+        return nuclRanges
+
+def novel_gmap_align_finder(gmapLoc, nuclDict, minCutoff):
+        # Re-index our nuclDict into a format capable of comparison to our gmapLoc dictionary
+        nuclRanges = reindex_nucldict(nuclDict)
         # Compare gmapLoc values to nuclRanges values to find GMAP alignments which don't overlap known genes
         validExons = []
         for key, value in gmapLoc.items():
@@ -767,8 +884,10 @@ p.add_argument("-tr", "--transfile", dest="transcriptomeFile",
 p.add_argument("-o", "--output", dest="outputFileName",
                help="Output results file name")
 # Opts
-p.add_argument('-r', '--rescue_genes', dest="rescue_genes", action='store_true',
+p.add_argument('-rg', '--rescue_genes', dest="rescue_genes", action='store_true',
                help="Optionally perform extended gene model rescue module (this is recommended)", default=False)
+p.add_argument('-re', '--rescue_exons', dest="rescue_exons", action='store_true',
+               help="Optionally perform extended exon rescue module (this is recommended)", default=False)
 p.add_argument('-s', '--stop_codons', dest="stop_codons", action='store_true',
                help="Optionally identify in-frame stop codons and correct these if indicated by transcript evidence.", default=False)
 p.add_argument("-fo", "--force", dest="force", action='store_true',
@@ -822,150 +941,170 @@ polishedRanges = {}
 prevBestResult = ''                                                                                     # This will let us remember our previous best match. This will reduce the chance of small differences of opinion ruining gene models.
                                                                                                         # It's worth noting that we also want to hold this value across genes, hence why I want to declare a blank value before we start our core loop.
 ### CORE PROCESS
-verbose_print(args, '### Main gene improvement module start ###')
-for key, model in nuclDict.items():
-        # Hold onto both the original gene model, as well as the new gene model resulting from indel correction/exon boundary modification
-        origModelCoords = []
-        newModelCoords = []
-        modelVcf = {}                                                                                   # This will hold onto the VCF-like dictionary for this model; we'll incorporate it into the main one if we accept these modifications.
-        # Scan through each individual model's exons
-        for i in range(len(model[0])):
-                # Find GMAP matches that align over the exon region of this coordinate
-                """I'm setting up this kind of behaviour because of a situation I noticed in fragmented gene models.
-                Specifically, when a gene model is fragmented, it will sometimes exceed the boundaries supported by transcript
-                alignment. The result is that, when using nonexact_exon_finder(), I will not find any alignments which fully encompass
-                the exon. Thus, the boundary_exon_finder will instead try to match at least one of the boundaries when we're looking at the
-                first and last exons in a gene model which might not respect the positions supported by transcript evidence. I don't want to
-                do this with internal exons, however, since it was causing problems that were too difficult to handle (i.e., 100% alignment
-                matches to portions of the exon but not the whole exon, whereas I had other exons which perfectly matched the boundaries but
-                had ~90-97% identity according to GMAP)"""
-                if i == 0 or i == len(model[0]) - 1:
-                        gmapMatches = gmap_exon_finder(gmapLoc, model, i, "boundary")
-                else:
-                        gmapMatches = gmap_exon_finder(gmapLoc, model, i, "internal")
-                        if gmapMatches == []:                                                           # If we can't find an encompassing match for an internal exon, there's a good chance that PASA has artificially extended this exon to correct for an indel.
+# Find gene models for rescue here
+gmapRescueDict = gmap_parse_models(args, minCutoff, transRecords)
+
+for z in range(len([nuclDict, gmapRescueDict])):
+        if z == 0:
+                verbose_print(args, '### Main gene improvement module start ###')
+        elif z == 1 and args.rescue_genes:
+                verbose_print(args, '### Gene rescue module start ###')
+        for key, model in [nuclDict, gmapRescueDict][z].items():
+                # Hold onto both the original gene model, as well as the new gene model resulting from indel correction/exon boundary modification
+                origModelCoords = []
+                newModelCoords = []
+                modelVcf = {}                                                                                   # This will hold onto the VCF-like dictionary for this model; we'll incorporate it into the main one if we accept these modifications.
+                # Scan through each individual model's exons
+                for i in range(len(model[0])):
+                        # Find GMAP matches that align over the exon region of this coordinate
+                        """I'm setting up this kind of behaviour because of a situation I noticed in fragmented gene models.
+                        Specifically, when a gene model is fragmented, it will sometimes exceed the boundaries supported by transcript
+                        alignment. The result is that, when using nonexact_exon_finder(), I will not find any alignments which fully encompass
+                        the exon. Thus, the boundary_exon_finder will instead try to match at least one of the boundaries when we're looking at the
+                        first and last exons in a gene model which might not respect the positions supported by transcript evidence. I don't want to
+                        do this with internal exons, however, since it was causing problems that were too difficult to handle (i.e., 100% alignment
+                        matches to portions of the exon but not the whole exon, whereas I had other exons which perfectly matched the boundaries but
+                        had ~90-97% identity according to GMAP)"""
+                        if i == 0 or i == len(model[0]) - 1:
                                 gmapMatches = gmap_exon_finder(gmapLoc, model, i, "boundary")
-                if gmapMatches == []:
-                        origModelCoords.append(model[0][i])                                             # If there is no transcript support for this exon, it might be a spurious attempt by PASA/EVM to keep the gene inframe. Thus, we'll only save these coords under the origModel.
-                        # Log
-                        log_update(args, logName, [key, model, i, gmapMatches, '.', '.'])
-                        continue
-                gmapMatches = gmap_curate(gmapMatches, model, i)
-                # Look into the future: cull any GMAP matches if they don't show up as a match in the next exon too
-                gmapMatches = check_future(gmapMatches, model, i)
-                # Continue if no GMAP matches
-                if gmapMatches == []:
-                        origModelCoords.append(model[0][i])
-                        newModelCoords.append(model[0][i])                                              # In this case, there IS transcript support for this exon, but it's not good enough for us to make edits with. Thus, we'll just hold onto the original coordinates for our new model.
-                        # Log
-                        log_update(args, logName, [key, model, i, gmapMatches, '.', '.'])
-                        continue
-                # Find the best GMAP match by SSW alignment score
-                sswResults = []
-                for match in gmapMatches:
-                        # Grab the sequences for alignment                                              # Note that we're going to compare the portion of the genome which the transcript hits (from GMAP) to the full transcript since GMAP handles N's weirdly and thus its transcript coordinates cannot be used.
-                        transcriptRecord, genomePatchRec = patch_seq_extract(match, model)
-                        # Perform SSW alignment
-                        sswResults.append(ssw(genomePatchRec, transcriptRecord) + [match[0], match[1], match[5], match[4], match[8]])  # SSW returns [transcriptAlign, genomeAlign, hyphen, startIndex, alignment.optimal_alignment_score), and we also + [matchStart, matchEnd, matchName, matchOrientation, 'exact/encompass'] to this.
-                sswResults.sort(key = lambda x: (-x[4], x[2], x[3]))                                    # i.e., sort so score is maximised, then sort by presence of hyphens then by the startIndex.
-                # Change our cutoff to reflect different levels of support (only 1 alignment is more suspect, multiple alignments means the best hit has a high chance of actually originating here)
-                if len(sswResults) == 1:
-                        tmpCutoff = 98
-                else:
-                        tmpCutoff = minCutoff                                                           # Technically I could just declare the cutoff to use within this part and not before this loop begins, but I think it helps to understand the decision making process of this program.
-                # Loop through our sswResults and find any good alignments
-                acceptedResults = []
-                for j in range(len(sswResults)):
-                        sswIdentity, tmpVcf = indel_location(sswResults[j][0], sswResults[j][1], sswResults[j][5], model, sswResults[j][3], i)     # This will update our vcfDict with indel locations.
-                        if sswIdentity >= tmpCutoff:
-                                acceptedResults.append([sswIdentity, tmpVcf, sswResults[j]])
-                # End checking if no results are trustworthy
-                if acceptedResults == []:
-                        origModelCoords.append(model[0][i])
-                        newModelCoords.append(model[0][i])                                              # Like above after gmap_curate, there is transcript support for this exon. Here, we chose not to make any changes, so we'll stick to the original coordinates.
-                        # Log
-                        log_update(args, logName, [key, model, i, sswResults, '.', 'hit'])
-                else:
-                        # Check to see if one of these results is identical to the accepted one from the last exon [This holds memory across genes]
-                        sswIdentity, tmpVcf, result = acceptedResults[0]                                # Hold onto the best result and overwrite these values if we find the result used for the previous exon/an exact boundary match if relevant.
-                        for l in range(len(acceptedResults)):
-                                if i == 0 or i == len(model[0]) - 1:
-                                        if result[9] != 'exact' and acceptedResults[l][2][9] == 'exact':
-                                                sswIdentity, tmpVcf, result = acceptedResults[l]        # This allows us to reprioritise exact matches over encompassing matches if we're looking at a gene boundary.
-                                if acceptedResults[l][2][7] == prevBestResult:
-                                        if acceptedResults[l][2][2] == 'n' or result[2] != 'n':
-                                                sswIdentity, tmpVcf, result = acceptedResults[l]        # If our prevBestMatch has no hyphen, choose this. If our highest scoring result has no hyphen and our prevBestMatch does, then stick with the best result to minimise potentially false changes.
-                                                break
-                        prevBestResult = result[7]
-                        # Does this result have any edits?
-                        if tmpVcf == {}:
-                                origModelCoords.append(model[0][i])
-                                newModelCoords.append(str(result[5]) + '-' + str(result[6]))            # Like above after gmap_curate, there is transcript support for this exon. Here, there were simply no changes to make, so we'll actually use the newer coordinates.
+                        else:
+                                gmapMatches = gmap_exon_finder(gmapLoc, model, i, "internal")
+                                if gmapMatches == []:                                                           # If we can't find an encompassing match for an internal exon, there's a good chance that PASA has artificially extended this exon to correct for an indel.
+                                        gmapMatches = gmap_exon_finder(gmapLoc, model, i, "boundary")
+                        if gmapMatches == []:
+                                origModelCoords.append(model[0][i])                                             # If there is no transcript support for this exon, it might be a spurious attempt by PASA/EVM to keep the gene inframe. Thus, we'll only save these coords under the origModel.
                                 # Log
-                                log_update(args, logName, [key, model, i, [result], '.', 'hit'])
+                                log_update(args, logName, [key, model, i, gmapMatches, '.', '.'])
                                 continue
-                        # Double polishing check [This also holds memory across genes]
-                        tmpVcf, polishedRanges = double_polish_check(modelVcf, vcfDict, tmpVcf, polishedRanges, model, result)
-                        # Modify our modelVcf
-                        modelVcf = vcf_merge(modelVcf, tmpVcf)
-                        origModelCoords.append(model[0][i])
-                        newModelCoords.append(str(result[5]) + '-' + str(result[6]))
-                        # Log
-                        log_update(args, logName, [key, model, i, [result], tmpVcf, 'hit'])             # Put result into a list since our logging function expects a list of lists, for which it retrieves the first entry.
-                        
-        # Hold onto any indel positions and provide logging information about this
-        if modelVcf == {}:
-                geneBlocks = geneblocks_update(geneBlocks, model, origModelCoords)
-                # Verbose and log
-                verbose_print(args, 'Found no edits [' + model[3] + ']')
-                log_comment(args, logName, '#' + model[3] + '\tNo edits found')
-        else:
-                origCDS, newCDS = cds_build(origModelCoords, newModelCoords, model[2], model[1], modelVcf)
-                origProt, newProt = translate_cds(origCDS, newCDS)
-                sizeDiff = abs(round((len(origProt) - len(newProt)) / len(newProt) * 100, 3))
-                # Is the newCDS at least as long as the original CDS without internal stop codons?
-                if len(newProt) > len(origProt):
-                        vcfDict = vcf_merge(vcfDict, modelVcf)
-                        geneBlocks = geneblocks_update(geneBlocks, model, newModelCoords)
+                        gmapMatches = gmap_curate(gmapMatches, model, i)
+                        # Look into the future: cull any GMAP matches if they don't show up as a match in the next exon too
+                        gmapMatches = check_future(gmapMatches, model, i)
+                        # Continue if no GMAP matches
+                        if gmapMatches == []:
+                                origModelCoords.append(model[0][i])
+                                newModelCoords.append(model[0][i])                                              # In this case, there IS transcript support for this exon, but it's not good enough for us to make edits with. Thus, we'll just hold onto the original coordinates for our new model.
+                                # Log
+                                log_update(args, logName, [key, model, i, gmapMatches, '.', '.'])
+                                continue
+                        # Find the best GMAP match by SSW alignment score
+                        sswResults = []
+                        for match in gmapMatches:
+                                # Grab the sequences for alignment                                              # Note that we're going to compare the portion of the genome which the transcript hits (from GMAP) to the full transcript since GMAP handles N's weirdly and thus its transcript coordinates cannot be used.
+                                transcriptRecord, genomePatchRec = patch_seq_extract(match, model)
+                                # Perform SSW alignment
+                                sswResults.append(ssw(genomePatchRec, transcriptRecord) + [match[0], match[1], match[5], match[4], match[8]])  # SSW returns [transcriptAlign, genomeAlign, hyphen, startIndex, alignment.optimal_alignment_score), and we also + [matchStart, matchEnd, matchName, matchOrientation, 'exact/encompass'] to this.
+                        sswResults.sort(key = lambda x: (-x[4], x[2], x[3]))                                    # i.e., sort so score is maximised, then sort by presence of hyphens then by the startIndex.
+                        # Change our cutoff to reflect different levels of support (only 1 alignment is more suspect, multiple alignments means the best hit has a high chance of actually originating here)
+                        if len(sswResults) == 1 and z == 0:                                                     # We can give the gene model rescue a bit more leeway since we can simply reject any changes that reduce ORF length - for the main module, ORF length reductions can be a good thing, so we need to maintain strictness.
+                                tmpCutoff = 98
+                        else:
+                                tmpCutoff = minCutoff                                                           # Technically I could just declare the cutoff to use within this part and not before this loop begins, but I think it helps to understand the decision making process of this program.
+                        # Loop through our sswResults and find any good alignments
+                        acceptedResults = []
+                        for j in range(len(sswResults)):
+                                sswIdentity, tmpVcf = indel_location(sswResults[j][0], sswResults[j][1], sswResults[j][5], model, sswResults[j][3], i)     # This will update our vcfDict with indel locations.
+                                if sswIdentity >= tmpCutoff:
+                                        acceptedResults.append([sswIdentity, tmpVcf, sswResults[j]])
+                        # End checking if no results are trustworthy
+                        if acceptedResults == []:
+                                origModelCoords.append(model[0][i])
+                                newModelCoords.append(model[0][i])                                              # Like above after gmap_curate, there is transcript support for this exon. Here, we chose not to make any changes, so we'll stick to the original coordinates.
+                                # Log
+                                log_update(args, logName, [key, model, i, sswResults, '.', 'hit'])
+                        else:
+                                # Check to see if one of these results is identical to the accepted one from the last exon [This holds memory across genes]
+                                sswIdentity, tmpVcf, result = acceptedResults[0]                                # Hold onto the best result and overwrite these values if we find the result used for the previous exon/an exact boundary match if relevant.
+                                for l in range(len(acceptedResults)):
+                                        if i == 0 or i == len(model[0]) - 1:
+                                                if result[9] != 'exact' and acceptedResults[l][2][9] == 'exact':
+                                                        sswIdentity, tmpVcf, result = acceptedResults[l]        # This allows us to reprioritise exact matches over encompassing matches if we're looking at a gene boundary.
+                                        if acceptedResults[l][2][7] == prevBestResult:
+                                                if acceptedResults[l][2][2] == 'n' or result[2] != 'n':
+                                                        sswIdentity, tmpVcf, result = acceptedResults[l]        # If our prevBestMatch has no hyphen, choose this. If our highest scoring result has no hyphen and our prevBestMatch does, then stick with the best result to minimise potentially false changes.
+                                                        break
+                                prevBestResult = result[7]
+                                # Does this result have any edits?
+                                if tmpVcf == {}:
+                                        origModelCoords.append(model[0][i])
+                                        newModelCoords.append(str(result[5]) + '-' + str(result[6]))            # Like above after gmap_curate, there is transcript support for this exon. Here, there were simply no changes to make, so we'll actually use the newer coordinates.
+                                        # Log
+                                        log_update(args, logName, [key, model, i, [result], '.', 'hit'])
+                                        continue
+                                # Double polishing check [This also holds memory across genes]
+                                tmpVcf, polishedRanges = double_polish_check(modelVcf, vcfDict, tmpVcf, polishedRanges, model, result)
+                                # Modify our modelVcf
+                                modelVcf = vcf_merge(modelVcf, tmpVcf)
+                                origModelCoords.append(model[0][i])
+                                newModelCoords.append(str(result[5]) + '-' + str(result[6]))
+                                # Log
+                                log_update(args, logName, [key, model, i, [result], tmpVcf, 'hit'])             # Put result into a list since our logging function expects a list of lists, for which it retrieves the first entry.
+                                
+                # Hold onto any indel positions and provide logging information about this
+                if modelVcf == {}:
+                        geneBlocks = geneblocks_update(geneBlocks, model, origModelCoords)
                         # Verbose and log
-                        verbose_print(args, 'Looks like we improved this model! [' + model[3] + ']')
-                        log_comment(args, logName, '#' + model[3] + '\tModel length increased\tOriginal model is ' + str(sizeDiff) + '% shorter than new\tOld=' + origProt + '\tNew=' + newProt + '\tAccepted edits=' + vcf_line_format(modelVcf))
-                elif len(newProt) == len(origProt):
-                        # How much did we change this model?
-                        protAlign = ssw(SeqRecord(Seq(origProt, generic_protein)), SeqRecord(Seq(newProt, generic_protein)))
-                        protIdentity = prot_identity(protAlign[0], protAlign[1])
-                        lengthDiff = abs(round((len(origProt) - len(protAlign[0])) / len(protAlign[0]) * 100, 3))       # This lets us know how much of the sequence end is being chopped off. A high identity alignment might still occur in the 5' region but after any modifications it might stop aligning.
-                        # Don't save changes if it was just a variant
-                        if protIdentity >= 98.0 and lengthDiff <= 10.0:                                                 # This choice is arbitrary. Small changes in the sequence are likely to be variants from another member of the same species, large changes might indicate a correction of a frameshift resulting in the same eventual stop position.
-                                # Verbose and log
-                                verbose_print(args, 'Found no edits [' + model[3] + ']')
-                                log_comment(args, logName, '#' + model[3] + '\tNo edits found')
-                        else:
-                                vcfDict = vcf_merge(vcfDict, modelVcf)
-                                geneBlocks = geneblocks_update(geneBlocks, model, newModelCoords)
-                                # Verbose and log
-                                verbose_print(args, 'Model length is the same but sequence differs a bit. [' + model[3] + ']')
-                                log_comment(args, logName, '#' + model[3] + '\tModel length is the same\tOld=' + origProt + '\tNew=' + newProt + '\tAccepted edits=' + vcf_line_format(modelVcf))
+                        verbose_print(args, 'Found no edits [' + model[3] + ']')
+                        log_comment(args, logName, '#' + model[3] + '\tNo edits found')
                 else:
-                        # Should we save this modification?
-                        ## Check 1: Single substitution that made things worse? (This likely occurs for genes that lack good transcriptional support. Exon boundaries aren't supported well and a transcript alignment proposes an exon that has no frame that lacks stop codons)
-                        if len(modelVcf[model[2]]) == 1 and '*' in list(modelVcf[model[2]].items())[0][1][0]:
-                                verbose_print(args, 'Found no edits [' + model[3] + ']')
-                                log_comment(args, logName, '#' + model[3] + '\tNo edits found')
-                        # Log how much shorter the new model is
-                        else:
-                                vcfDict = vcf_merge(vcfDict, modelVcf)
-                                geneBlocks = geneblocks_update(geneBlocks, model, newModelCoords)
-                                # Verbose and log
-                                if sizeDiff <= 10.0:
-                                        verbose_print(args, 'I shortened this model, but not by much. It\'s probably skipping an exon [' + model[3] + ']')
-                                        log_comment(args, logName, '#' + model[3] + '\tModel length decreased _slightly_\tOriginal model is ' + str(sizeDiff) + '% longer than new\tOld=' + origProt + '\tNew=' + newProt + '\tAccepted edits=' + vcf_line_format(modelVcf))
-                                elif sizeDiff <= 60.0:
-                                        verbose_print(args, 'I shortened this model a lot. Was this gene a chimer, or does it involve ab initio predicted exons? [' + model[3] + ']')
-                                        log_comment(args, logName, '#' + model[3] + '\tModel length decreased _quite a bit_\tOriginal model is ' + str(sizeDiff) + '% longer than new\tOld=' + origProt + '\tNew=' + newProt + '\tAccepted edits=' + vcf_line_format(modelVcf))
+                        origCDS, newCDS = cds_build(origModelCoords, newModelCoords, model[2], model[1], modelVcf)
+                        origProt, newProt = translate_cds(origCDS, newCDS)
+                        sizeDiff = abs(round((len(origProt) - len(newProt)) / len(newProt) * 100, 3))
+                        # Is the newCDS at least as long as the original CDS without internal stop codons?
+                        if z == 0:
+                                if len(newProt) > len(origProt):
+                                        vcfDict = vcf_merge(vcfDict, modelVcf)
+                                        geneBlocks = geneblocks_update(geneBlocks, model, newModelCoords)
+                                        # Verbose and log
+                                        verbose_print(args, 'Looks like we improved this model! [' + model[3] + ']')
+                                        log_comment(args, logName, '#' + model[3] + '\tModel length increased\tOriginal model is ' + str(sizeDiff) + '% shorter than new\tOld=' + origProt + '\tNew=' + newProt + '\tAccepted edits=' + vcf_line_format(modelVcf))
+                                elif len(newProt) == len(origProt):
+                                        # How much did we change this model?
+                                        protAlign = ssw(SeqRecord(Seq(origProt, generic_protein)), SeqRecord(Seq(newProt, generic_protein)))
+                                        protIdentity = prot_identity(protAlign[0], protAlign[1])
+                                        lengthDiff = abs(round((len(origProt) - len(protAlign[0])) / len(protAlign[0]) * 100, 3))       # This lets us know how much of the sequence end is being chopped off. A high identity alignment might still occur in the 5' region but after any modifications it might stop aligning.
+                                        # Don't save changes if it was just a variant
+                                        if protIdentity >= 98.0 and lengthDiff <= 10.0:                                                 # This choice is arbitrary. Small changes in the sequence are likely to be variants from another member of the same species, large changes might indicate a correction of a frameshift resulting in the same eventual stop position.
+                                                # Verbose and log
+                                                verbose_print(args, 'Found no edits [' + model[3] + ']')
+                                                log_comment(args, logName, '#' + model[3] + '\tNo edits found')
+                                        else:
+                                                vcfDict = vcf_merge(vcfDict, modelVcf)
+                                                geneBlocks = geneblocks_update(geneBlocks, model, newModelCoords)
+                                                # Verbose and log
+                                                verbose_print(args, 'Model length is the same but sequence differs a bit. [' + model[3] + ']')
+                                                log_comment(args, logName, '#' + model[3] + '\tModel length is the same\tOld=' + origProt + '\tNew=' + newProt + '\tAccepted edits=' + vcf_line_format(modelVcf))
                                 else:
-                                        verbose_print(args, 'I shortened this model _dramatically_. Check this out manually [' + model[3] + ']')
-                                        log_comment(args, logName, '#' + model[3] + '\tModel length decreased _dramatically_\tOriginal model is ' + str(sizeDiff) + '% longer than new\tOld=' + origProt + '\tNew=' + newProt + '\tAccepted edits=' + vcf_line_format(modelVcf))
+                                        # Should we save this modification?
+                                        ## Check 1: Single substitution that made things worse? (This likely occurs for genes that lack good transcriptional support. Exon boundaries aren't supported well and a transcript alignment proposes an exon that has no frame that lacks stop codons)
+                                        if len(modelVcf[model[2]]) == 1 and '*' in list(modelVcf[model[2]].items())[0][1][0]:
+                                                verbose_print(args, 'Found no edits [' + model[3] + ']')
+                                                log_comment(args, logName, '#' + model[3] + '\tNo edits found')
+                                        # Log how much shorter the new model is
+                                        else:
+                                                vcfDict = vcf_merge(vcfDict, modelVcf)
+                                                geneBlocks = geneblocks_update(geneBlocks, model, newModelCoords)
+                                                # Verbose and log
+                                                if sizeDiff <= 10.0:
+                                                        verbose_print(args, 'I shortened this model, but not by much. It\'s probably skipping an exon [' + model[3] + ']')
+                                                        log_comment(args, logName, '#' + model[3] + '\tModel length decreased _slightly_\tOriginal model is ' + str(sizeDiff) + '% longer than new\tOld=' + origProt + '\tNew=' + newProt + '\tAccepted edits=' + vcf_line_format(modelVcf))
+                                                elif sizeDiff <= 60.0:
+                                                        verbose_print(args, 'I shortened this model a lot. Was this gene a chimer, or does it involve ab initio predicted exons? [' + model[3] + ']')
+                                                        log_comment(args, logName, '#' + model[3] + '\tModel length decreased _quite a bit_\tOriginal model is ' + str(sizeDiff) + '% longer than new\tOld=' + origProt + '\tNew=' + newProt + '\tAccepted edits=' + vcf_line_format(modelVcf))
+                                                else:
+                                                        verbose_print(args, 'I shortened this model _dramatically_. Check this out manually [' + model[3] + ']')
+                                                        log_comment(args, logName, '#' + model[3] + '\tModel length decreased _dramatically_\tOriginal model is ' + str(sizeDiff) + '% longer than new\tOld=' + origProt + '\tNew=' + newProt + '\tAccepted edits=' + vcf_line_format(modelVcf))
+                        else:
+                                # For the gene rescue module we don't have a true "original" gene model so all we care about is saving any edits and logging basic details
+                                if len(newProt) > len(origProt):
+                                        vcfDict = vcf_merge(vcfDict, modelVcf)
+                                        geneBlocks = geneblocks_update(geneBlocks, model, newModelCoords)
+                                        # Verbose and log
+                                        verbose_print(args, 'Looks like we rescued a gene model! [' + model[3] + ']')
+                                        log_comment(args, logName, '#' + model[3] + '\tGene model rescued\tOriginal model is ' + str(sizeDiff) + '% shorter than new\tOld=' + origProt + '\tNew=' + newProt + '\tAccepted edits=' + vcf_line_format(modelVcf))
+                                else:
+                                        # Verbose and log                                                       # If, somehow, we didn't actually increase the length of the CDS region then we simply don't need to save any changes. This is unlikely to occur but its a safeguard that can fit here without issue.
+                                        verbose_print(args, 'Found no edits [' + model[3] + ']')
+                                        log_comment(args, logName, '#' + model[3] + '\tNo edits found')
 
 # Check for probable gene joins
 if args.verbose or args.log:
@@ -980,10 +1119,10 @@ if args.verbose or args.log:
 # Create output VCF-like file                                                                                   # It's a really abbreviated VCF style format, but it's enough to make it easy to parse and perform genome edits.
 vcf_output(args.outputFileName, vcfDict, '.')
 
-# Gene model rescuer module
-if args.rescue_genes:
-        verbose_print(args, '### Gene model rescue module start ###')
-        log_comment(args, logName, '### Gene model rescue indels ###')
+# Exon rescue module
+if args.rescue_exons:
+        verbose_print(args, '### Exon rescue module start ###')
+        log_comment(args, logName, '### Exon rescue indels ###')
         gmapHits = novel_gmap_align_finder(gmapLoc, nuclDict, minCutoff)
         novelVcf = {}
         for hit in gmapHits:
@@ -1039,7 +1178,7 @@ if args.rescue_genes:
                                 # Log
                                 rescue_log_update(args, logName, [match[7], sswResults, '.'])
         # Output to VCF
-        vcf_output(args.outputFileName, novelVcf, '# Gene rescue module indel predictions')
+        vcf_output(args.outputFileName, novelVcf, '# Exon rescue module indel predictions')
 
 # Remove the output file that was being replaced if relevant
 if tmpFileName != None and os.path.isfile(tmpFileName):
