@@ -676,7 +676,7 @@ def verbose_print(args, text):
 ## Gene model rescue functions
 def gmap_parse_models(args, cutoff, transRecords):
         if args.rescue_genes == False:
-                return []
+                return {}
         # Re-index our nuclDict into a format capable of comparison to our gmapLoc dictionary
         nuclNcls, nuclModels = reindex_nucldict(nuclDict)
         # Parse the gmapFile and build models
