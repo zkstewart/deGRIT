@@ -17,7 +17,7 @@ def vcf_parser(args):
                         # Skip unnecessary lines or stop parsing if rescue_genes indels are not wanted
                         if line.startswith('#contig_id'):
                                 continue
-                        elif line.startswith('# Gene rescue module indel predictions'):
+                        elif line.startswith('# Gene model rescue module indel predictions'):
                                 if args.rescue_genes == False:
                                         break
                                 else:
