@@ -26,7 +26,29 @@ Finally, you should also provide the FASTA files for your genome assembly and th
 
 # Program benchmark
 
-Forthcoming. Once the reannotation is complete, BUSCO scores before and after will be presented here to showcase how this statistic may be improved by deGRIT.
+Test 1 - scallop gene model prediction
+
+Scallop predicts gene models based solely on RNAseq alignments against the genome sequence and thus any errors in this sequence will be present in the FASTA file produced when converting gtf to fasta. Within the worst affected genome sequence, deGRIT made the following modifications.
+
+```
+Genome editing complete. Basic information provided below.
+Edits include gene module rescue positions: Yes
+Number of deletion events: 8071
+Number of substitution events: 148
+Number of insertion events: 976
+Total number of contigs: 829
+Number of edited contigs: 409
+```
+
+BUSCO before: ```Before: C:94.1%[S:39.7%,D:54.4%],F:4.3%,M:1.6%,n:978```
+
+BUSCO after: ```C:96.6%[S:41.3%,D:55.3%],F:1.7%,M:1.7%,n:978```
+
+As demonstrated, in a genome that contains many indel errors, BUSCO scores can be improved noticeably by converting fragmented genes into complete genes.
+
+Test 2 - EVM combination of BRAKER & PASA with PASA updates.
+
+Forthcoming.
 
 # Program use
 
