@@ -40,7 +40,7 @@ Total number of contigs: 829
 Number of edited contigs: 409
 ```
 
-BUSCO before: ```Before: C:94.1%[S:39.7%,D:54.4%],F:4.3%,M:1.6%,n:978```
+BUSCO before: ```C:94.1%[S:39.7%,D:54.4%],F:4.3%,M:1.6%,n:978```
 
 BUSCO after: ```C:96.6%[S:41.3%,D:55.3%],F:1.7%,M:1.7%,n:978```
 
