@@ -108,6 +108,7 @@ def intergenic_spacing(nuclDict):
                         nuclLists[model[2]].append([start, stop, model[1]])
         # Prune out overlaps so we can look specifically at intergenic distances
         intergenDist = []
+        shortestDist = [None]                                                   # This is just to give some idea of which gene might be fragmented, and to possibly look to see why.
         for key, lst in nuclLists.items():
                 lst.sort(key = lambda x: (x[0], -x[1]))
                 # Separate lists into their respective orientations
@@ -143,13 +144,17 @@ def intergenic_spacing(nuclDict):
                         for i in range(len(lst)):
                                 if i != len(lst)-1:
                                         intergenDist.append(lst[i+1][0] - lst[i][1] - 1)
+                                        if shortestDist[0] == None:
+                                                shortestDist = [lst[i+1][0] - lst[i][1] - 1, key, str(lst[i][1]) + '-' +   str(lst[i+1][0])]
+                                        elif shortestDist[0] > lst[i+1][0] - lst[i][1] - 1:
+                                                shortestDist = [lst[i+1][0] - lst[i][1] - 1, key, str(lst[i][1]) + '-' +   str(lst[i+1][0])]
         # Calculate statistics
         maxDist = max(intergenDist)
         minDist = min(intergenDist)
         medDist = median(intergenDist)
         meanDist = round(mean(intergenDist), 3)
         # Return results
-        return maxDist, minDist, medDist, meanDist
+        return maxDist, minDist, medDist, meanDist, shortestDist
 
 def cdna_parser(gffFile):                                                                               # I've essentially crammed the gff3_to_fasta.py script in here since we need to parse the gff3 file to get the CDS regions to perform the CDS merging and find out if we get a proper gene model.
         def group_process(currGroup):
@@ -454,7 +459,7 @@ unrescuedExons, unrescuedGenes = gmap_parse_models(args, gmapCutoff, transRecord
 maxExonCount, medExonCount, meanExonCount, maxExonSize, medExonSize, meanExonSize = exon_count(nuclDictNoIso)   # Representative isoforms only is more valid here since we'll otherwise get a lot of repeated exons.
 
 ## STATISTIC: Intergenic distance between genes
-maxDist, minDist, medDist, meanDist = intergenic_spacing(nuclDict)                                              # Use the full isoform dict since we handle overlaps by merging gene models - this provides a slightly more "realistic" view of the intergenic dist if a shorter isoform has an extra exon at its terminal, for example.
+maxDist, minDist, medDist, meanDist, shortestDist = intergenic_spacing(nuclDict)                                # Use the full isoform dict since we handle overlaps by merging gene models - this provides a slightly more "realistic" view of the intergenic dist if a shorter isoform has an extra exon at its terminal, for example.
 
 # Present results in output file
 with open(args.outputFileName, 'w') as fileOut:
@@ -475,5 +480,6 @@ with open(args.outputFileName, 'w') as fileOut:
         # Intergenic distance between genes
         fileOut.write('\n# Intergenic distance between genes of the same orientation')
         fileOut.write('\nLargest distance between genes (bp)=' + str(maxDist) + '\tSmallest distance between genes (bp)=' + str(minDist) + '\tMedian distance between genes (bp)=' + str(medDist) + '\tMean distance between genes (bp)=' + str(meanDist))
+        fileOut.write('\nExtra info of smallest distance\tContig ID=' + shortestDist[1] + '\tIntergenic coordinates=' + shortestDist[2])
 
 #### SCRIPT ALL DONE
