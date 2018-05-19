@@ -26,7 +26,7 @@ Finally, you should also provide the FASTA files for your genome assembly and th
 
 # Program benchmark
 
-Test 1 - scallop gene model prediction
+## Test 1 - scallop gene model prediction
 
 Scallop predicts gene models based solely on RNAseq alignments against the genome sequence and thus any errors in this sequence will be present in the FASTA file produced when converting gtf to fasta. Within the worst affected genome sequence, deGRIT made the following modifications.
 
@@ -46,9 +46,63 @@ BUSCO after: ```C:96.6%[S:41.3%,D:55.3%],F:1.7%,M:1.7%,n:978```
 
 As demonstrated, in a genome that contains many indel errors, BUSCO scores can be improved noticeably by converting fragmented genes into complete genes.
 
-Test 2 - EVM combination of BRAKER & PASA with PASA updates.
+## Test 2 - EVM combination of BRAKER & PASA with PASA updates.
 
-Forthcoming.
+Using the above-mentioned edits, I re-ran BRAKER & PASA, used EVM to combine these results, then used PASA to update the gene models two times iteratively. BUSCO scores were computed using the representative isoform of each gene model. These scores from the first annotation to the second after deGRIT are below.
+
+BUSCO before: ```C:94.4%[S:90.2%,D:4.2%],F:2.7%,M:2.9%,n:978```
+
+BUSCO after: ```C:96.1%[S:91.7%,D:4.4%],F:1.5%,M:2.4%,n:978```
+
+As with scallop, fragmented genes have been fixed and, in this case, we have also reduced the number of missing models compared to the first annotation.
+
+Additional gene model statistics were calculated using the gff3_statistics.py script part of this repository. These are presented below.
+
+## Before
+```
+# Statistics output for cal_smart.rnam-trna.predeGRIT.sorted.gff3 and cal_smart_cds.gmap.spliced_alignments.predeGRIT.gff3
+# Exons covered by transcripts
+Total num of exons part of longest isoforms	193920
+Exons with transcriptional support	167219	86.231% of total
+Exons with perfect support for boundaries	144402	86.355% of exons with support
+# Unannotated exons and genes suggested by transcript alignment
+Total num of exons indicated by transcript alignment absent in the annotation file	15235
+Total num of good gene models indicated by transcript alignment absent in the annotation file	3009
+# Exon statistics per gene
+Most exons in a gene=162	Median exon count per gene=4.0	Mean exon count per gene=6.468
+Longest exon length (bp)=14591	Median exon length (bp)=117.0	Mean exon length (bp)=202.943
+# Intergenic distance between genes of the same orientation
+Largest distance between genes (bp)=403376	Smallest distance between genes (bp)=8	Median distance between genes (bp)=5527	Mean distance between genes (bp)=11727.595
+Extra info of smallest distance	Contig ID=utg380_pilon_pilon	Intergenic coordinates=443118-443127
+```
+
+## After
+```
+# Statistics output for cal_smart.rnam-trna.final.sorted.gff3 and gmap.spliced_alignments.gff3
+# Exons covered by transcripts
+Total num of exons part of longest isoforms	190620
+Exons with transcriptional support	164470	86.282% of total
+Exons with perfect support for boundaries	151184	91.922% of exons with support
+# Unannotated exons and genes suggested by transcript alignment
+Total num of exons indicated by transcript alignment absent in the annotation file	13331
+Total num of good gene models indicated by transcript alignment absent in the annotation file	2818
+# Exon statistics per gene
+Most exons in a gene=221	Median exon count per gene=4.0	Mean exon count per gene=6.794
+Longest exon length (bp)=14910	Median exon length (bp)=119.0	Mean exon length (bp)=209.929
+# Intergenic distance between genes of the same orientation
+Largest distance between genes (bp)=299025	Smallest distance between genes (bp)=7	Median distance between genes (bp)=6195.0	Mean distance between genes (bp)=12490.949
+Extra info of smallest distance	Contig ID=utg34	Intergenic coordinates=301604-301612
+```
+
+Notably, we have reduced the total number of exons part of longest isoforms as expected when combining genes which were split by fragmentation within (what should be) a shared exon. 
+
+Our number of perfectly supported exon boundaries has increased quite a bit and we have less absent exons and gene models.
+
+Our largest distance between genes has decreased indicating the presence of a new gene model within this previous region, and the median and mean distances between genes has increased which shows that we have less gene models in the immediate vicinity of one another (which is often indicative of fragmentation).
+
+The smallest distance between genes remained largely the same, which suggests that this gene or another gene was not able to be fixed by deGRIT. In the case of the "Before" instance, manual inspection revealed that there was no transcript CDS which aligned over the small gap separating these two "fragmented" gene models. Two separate CDS alignments perfectly supported the exon boundaries of these gene models separately, however. Based on a cursory overview of BLAST results, it is likely that these genes should be part of a much larger model which is not present in my transcriptome. In the case suggested by the "After" instance, this gene model entirely lacked transcriptional support, and it is probable that some pseudo-random system in the BRAKER pipeline resulted in another gene model being annotated just upstream of a gene that was part of the original annotation. Manual inspection indicates that a single bp deletion can merge these two models, but the fact that this is a single-exon gene with no transcriptional support suggests some need for caution when suggesting that this is "real".
+
+Nonetheless, these statistics point towards a markedly better annotation with the only limitation being that deGRIT cannot fix errors present in genomic sequence which lack transcript alignments.
 
 # Program use
 
