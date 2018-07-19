@@ -870,9 +870,11 @@ polishedRanges = {}
 prevBestResult = ''                                                                                     # This will let us remember our previous best match. This will reduce the chance of small differences of opinion ruining gene models.
                                                                                                         # It's worth noting that we also want to hold this value across genes, hence why I want to declare a blank value before we start our core loop.
 ### CORE PROCESS
-gmapRescueDict = gmap_parse_models(args, minCutoff, transRecords)
 if args.rescue_genes:
+        gmapRescueDict = gmap_parse_models(args, minCutoff, transRecords)
         verbose_print(args, 'Loaded GMAP gff3 file for gene rescue')
+else:
+        gmapRescueDict = {}     # Set up an empty dictionary so iteration stops during the below loop after processing nuclDict
 for z in range(len([nuclDict, gmapRescueDict])):
         if z == 0:
                 verbose_print(args, '### Main gene improvement module start ###')
@@ -1032,20 +1034,21 @@ for z in range(len([nuclDict, gmapRescueDict])):
                 vcf_output(args.outputFileName, vcfDict, '.')
                 stage1Vcf = copy.deepcopy(vcfDict)
         else:
-                # Pull out the new indel positions so we can distinguish between indels found in the main module versus the gene rescue module
-                newVcf = {}
-                for key, value in vcfDict.items():
-                        if key in stage1Vcf:
-                                st1ContigVcf = stage1Vcf[key]
-                                for pair in value.items():
-                                        if pair[0] not in st1ContigVcf:
-                                                if key not in newVcf:
-                                                        newVcf[key] = {pair[0]: pair[1]}
-                                                else:
-                                                        newVcf[key][pair[0]] = pair[1]
-                        else:
-                                newVcf[key] = value
-                vcf_output(args.outputFileName, newVcf, '# Gene model rescue module indel predictions')
+                if gmapRescueDict != {}:
+                        # Pull out the new indel positions so we can distinguish between indels found in the main module versus the gene rescue module
+                        newVcf = {}
+                        for key, value in vcfDict.items():
+                                if key in stage1Vcf:
+                                        st1ContigVcf = stage1Vcf[key]
+                                        for pair in value.items():
+                                                if pair[0] not in st1ContigVcf:
+                                                        if key not in newVcf:
+                                                                newVcf[key] = {pair[0]: pair[1]}
+                                                        else:
+                                                                newVcf[key][pair[0]] = pair[1]
+                                else:
+                                        newVcf[key] = value
+                        vcf_output(args.outputFileName, newVcf, '# Gene model rescue module indel predictions')
 
 # Check for probable gene joins
 if args.verbose or args.log:
@@ -1062,3 +1065,4 @@ if tmpFileName != None and os.path.isfile(tmpFileName):
         os.remove(tmpFileName)
 
 #### SCRIPT ALL DONE
+verbose_print(args, 'Program completed successfully!')
