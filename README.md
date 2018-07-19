@@ -108,7 +108,7 @@ Nonetheless, these statistics point towards a markedly better annotation with th
 
 # Computional resource requirements
 
-This program is single-threaded and uses minimal memory. From my own use, about 2GB of memory and 20 minutes was required when using the --rescue_genes module (explained below) on genomes approximately 300Mb in size. Not using this functionality speeds up program execution significantly - {{{}}}}. Larger input files may use slightly more resources, but it should never get to be more than a standard 8GB laptop could handle.
+This program is single-threaded and uses minimal memory. From my own use, about 2GB of memory and 25 minutes was required when using the --rescue_genes module (explained below) on genomes approximately 300Mb in size. Not using this functionality speeds up program execution by approximately 20%, but the program is still quite quick (thanks to NCLS!) so this should not be a major concern. Larger input files may use slightly more resources, but it should never get to be more than a standard 8GB laptop could handle.
 
 # Program use
 
