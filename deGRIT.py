@@ -137,7 +137,7 @@ def ssw(genomePatchRec, transcriptRecord):
                 hyphen = 'y'
         return [transcriptAlign, genomeAlign, hyphen, startIndex, alignment.optimal_alignment_score]
 
-def indel_location(transcriptAlign, genomeAlign, matchStart, model, startIndex, exonIndex):             # This function will check hyphens in the transcript (== deletions in the genome) and hyphens in the genome (== insertion from the transcript).
+def indel_location(transcriptAlign, genomeAlign, matchStart, model, startIndex, exonIndex, stop_codons):             # This function will check hyphens in the transcript (== deletions in the genome) and hyphens in the genome (== insertion from the transcript).
         # Check if this is likely to be worth bothering
         badChars = ['---', 'n']
         for char in badChars:                                                                           # This is a rough metric, but gap opens larger than three make us wonder whether this transcript does actually originate from the alignment position (maybe it's a paralogue?); in almost all cases, a real indel has a length of one.
@@ -177,7 +177,8 @@ def indel_location(transcriptAlign, genomeAlign, matchStart, model, startIndex, 
                                         literalVcf[x-gapCorrection][0] += pair[0]
                         gapCorrection += 1
         # Stop codon identification
-        tmpVcf = stop_codon_identify(literalVcf, genomeAlign, transcriptAlign, startIndex, exonIndex, matchStart, model, tmpVcf)
+        if stop_codons: # stop_codons refers to the user-specified argument; if it is true, this module was turned on, and so we'll call this function here
+                tmpVcf = stop_codon_identify(literalVcf, genomeAlign, transcriptAlign, startIndex, exonIndex, matchStart, model, tmpVcf)
         # Calculate the (rough) identity score between the alignments
         pctIdentity = (identical / len(transcriptAlign)) * 100
         return pctIdentity, tmpVcf
@@ -925,7 +926,7 @@ for z in range(len([nuclDict, gmapRescueDict])):
                         # Loop through our sswResults and find any good alignments
                         acceptedResults = []
                         for j in range(len(sswResults)):
-                                sswIdentity, tmpVcf = indel_location(sswResults[j][0], sswResults[j][1], sswResults[j][5], model, sswResults[j][3], i)     # This will update our vcfDict with indel locations.
+                                sswIdentity, tmpVcf = indel_location(sswResults[j][0], sswResults[j][1], sswResults[j][5], model, sswResults[j][3], i, args.stop_codons)     # This will update our vcfDict with indel locations.
                                 if sswIdentity >= tmpCutoff:
                                         acceptedResults.append([sswIdentity, tmpVcf, sswResults[j]])
                         # End checking if no results are trustworthy
