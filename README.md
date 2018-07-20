@@ -10,6 +10,8 @@ deGRIT uses information from a previous gene annotation run from PASA in order t
 
 While it may be possible to address indel errors in a genome by introducing N's to produce a consistent reading frame, I was not satisfied with this option and, to my knowledge, a program capable of doing this for genomic sequences is not currently available. By utilising RNAseq transcripts, we can identify the exact locations where indels occur and, in the case where an insertion must be made into the genome to fix an error, we can use a biologically "real" nucleotide. One drawback is that if your transcriptomic data does not originate from the exact organism you sequenced the genome from (it MUST be from the same species, however), the result may be somewhat of a mosaic whereby SNPs from multiple organisms may be present in the resultant genome. If the purpose of your genome assembly is to produce error-free gene models in a PacBio assembly, this should not be a serious problem, and the benefits of using this program far outweigh this drawback.
 
+See https://flowersoftheocean.wordpress.com/2018/07/20/degrit-a-program-to-polish-genome-assemblies-using-transcriptome-data/ for a detailed run through of the way deGRIT works and many other things relating to this program.
+
 # Program inputs
 
 This program is specifically designed to work with outputs from a few programs. 
