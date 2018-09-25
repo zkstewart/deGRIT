@@ -20,7 +20,7 @@ Firstly, the gene annotation GFF3 should be in a format produced by EVidenceMode
 
 Secondly, the nucleotide transcript alignment file is expected to be produced by GMAP using the settings that PASA automatically uses when running GMAP itself. In practice, this can be easily emulated with a command that resembles this.
 
-```/home/dir_to/PASApipeline/scripts/..//scripts/run_spliced_aligners.pl --aligners gmap --genome $GENOME --transcripts $TRANSCRIPTOME -I 500000 -N 1 --CPU 2```
+```/home/dir_to/PASApipeline/scripts/run_spliced_aligners.pl --aligners gmap --genome $GENOME --transcripts $TRANSCRIPTOME -I 500000 -N 1 --CPU 2```
 
 Note that the above PASA command assumes version 2.3.0 of the program is being used. How PASA runs GMAP may change with updates to the software.
 
