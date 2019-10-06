@@ -447,14 +447,17 @@ def geneblocks_update(geneBlocksDict, model, modelCoords):
         return geneBlocksDict
 
 def gene_overlap_validation(geneBlocks):
+        isoRegex = re.compile(r'.+?\.(\d{1,10}\.\d{1,10}\.[a-z0-9]+|\d{1,10})$') # PASA adds suffixes to gene models to indicate genes and isoforms; this captures that section
         outlist = []
         for key, value in geneBlocks.items():
                 value.sort()
                 for i in range(len(value)-1):
                         if value[i][1] >= value[i+1][0]:
-                                basename1 = isoRegex.search(value[i][2]).group(1)
-                                basename2 = isoRegex.search(value[i+1][2]).group(1)
-                                if basename1 != basename2 and value[i][3] == value[i+1][3]:             # i.e., if these aren't isoforms (basenames will be identical if they are) and the end of gene1 overlaps the start of gene 2.
+                                suffix1 = isoRegex.search(value[i][2]).group(1)
+                                basename1 = value[i][2][:len(value[i][2])-len(suffix1)-1] # -1 for the . in front 
+                                suffix2 = isoRegex.search(value[i+1][2]).group(1)
+                                basename2 = value[i+1][2][:len(value[i+1][2])-len(suffix2)+1]
+                                if basename1 != basename2 and value[i][3] == value[i+1][3]:             # i.e., if these aren't isoforms (basenames will be identical if they are) and they are present in the same orientation (field [3] == orientation)
                                         outlist.append(value[i][2] + '\t' + value[i+1][2])
         return outlist
 
@@ -801,9 +804,6 @@ def reindex_nucldict(nuclDict):
         nuclNcls = NCLS(starts.values, ends.values, ids.values)
         # Return this object
         return nuclNcls, nuclModels
-
-# Build regex for later use
-isoRegex = re.compile(r'(evm\.model\.utg\d{1,10}(_pilon_pilon)?\.\d{1,10})')
 
 ### USER INPUT
 usage = """%(prog)s aims to improve the ability to reannotate gene models. In order to work, this program
