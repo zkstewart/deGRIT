@@ -448,14 +448,23 @@ def geneblocks_update(geneBlocksDict, model, modelCoords):
 
 def gene_overlap_validation(geneBlocks):
         isoRegex = re.compile(r'.+?\.(\d{1,10}\.\d{1,10}\.[a-z0-9]+|\d{1,10})$') # PASA adds suffixes to gene models to indicate genes and isoforms; this captures that section
+        ggfRegex = re.compile(r'.+?\.(path\d{1,10}|mrna\d{1,10})$')
         outlist = []
         for key, value in geneBlocks.items():
                 value.sort()
                 for i in range(len(value)-1):
                         if value[i][1] >= value[i+1][0]:
-                                suffix1 = isoRegex.search(value[i][2]).group(1)
-                                basename1 = value[i][2][:len(value[i][2])-len(suffix1)-1] # -1 for the . in front 
-                                suffix2 = isoRegex.search(value[i+1][2]).group(1)
+                                assert '.path' in value[i][2] or '.mrna' in value[i][2] or value[i][2].startswith('evm.model.') # Raise recognisable error if the gene model IDs aren't conformant with our expectations
+                                assert '.path' in value[i+1][2] or '.mrna' in value[i+1][2] or value[i+1][2].startswith('evm.model.')
+                                if isoRegex.match(value[i][2]) != None:
+                                        suffix1 = isoRegex.search(value[i][2]).group(1)
+                                else:
+                                        suffix1 = ggfRegex.search(value[i][2]).group(1)
+                                if isoRegex.match(value[i+1][2]) != None:
+                                        suffix2 = isoRegex.search(value[i+1][2]).group(1)
+                                else:
+                                        suffix2 = ggfRegex.search(value[i+1][2]).group(1)
+                                basename1 = value[i][2][:len(value[i][2])-len(suffix1)-1]
                                 basename2 = value[i+1][2][:len(value[i+1][2])-len(suffix2)+1]
                                 if basename1 != basename2 and value[i][3] == value[i+1][3]:             # i.e., if these aren't isoforms (basenames will be identical if they are) and they are present in the same orientation (field [3] == orientation)
                                         outlist.append(value[i][2] + '\t' + value[i+1][2])
