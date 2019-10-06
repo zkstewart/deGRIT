@@ -447,7 +447,7 @@ def geneblocks_update(geneBlocksDict, model, modelCoords):
         return geneBlocksDict
 
 def gene_overlap_validation(geneBlocks):
-        isoRegex = re.compile(r'.+?\.(\d{1,10}\.\d{1,10}\.[a-z0-9]+|\d{1,10})$') # PASA adds suffixes to gene models to indicate genes and isoforms; this captures that section
+        isoRegex = re.compile(r'.+?\.(\d{1,10}(\.\d{1,10}\.[a-z0-9]+)+|\d{1,10})$') # PASA adds suffixes to gene models to indicate genes and isoforms; this captures that section
         ggfRegex = re.compile(r'.+?\.(path\d{1,10}|mrna\d{1,10})$')
         outlist = []
         for key, value in geneBlocks.items():
