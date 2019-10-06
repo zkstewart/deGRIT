@@ -13,13 +13,12 @@
 # occur and correct these in the genomic sequence, enabling reannotation to occur.
 
 # Load packages
-import re, os, argparse, copy, warnings, shutil
+import re, os, argparse, copy, warnings, shutil, parasail
 import pandas as pd
 from Bio import SeqIO
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 from Bio.Alphabet import generic_dna, generic_protein
-from skbio.alignment import StripedSmithWaterman
 from ncls import NCLS
 
 ### Various functions to perform operations throughout the program
@@ -122,11 +121,11 @@ def patch_seq_extract(match, model):
         return transcriptRecord, genomePatchRec
 
 def ssw(genomePatchRec, transcriptRecord):
-        # Perform SSW with scikit.bio implementation
-        query = StripedSmithWaterman(str(genomePatchRec.seq))
-        alignment = query(str(transcriptRecord.seq))
-        genomeAlign = alignment.aligned_query_sequence
-        transcriptAlign = alignment.aligned_target_sequence
+        # Perform SSW with parasail implementation
+        profile = parasail.profile_create_16(str(genomePatchRec.seq), parasail.blosum62)
+        alignment = parasail.sw_trace_striped_profile_16(profile, str(transcriptRecord.seq), 10, 1)
+        genomeAlign = alignment.traceback.query
+        transcriptAlign = alignment.traceback.ref
         # Figure out where we're starting in the genome with this alignment
         startIndex = str(genomePatchRec.seq).find(genomeAlign.replace('-', ''))
         # Figure out if we need downstream processing to identify an indel
