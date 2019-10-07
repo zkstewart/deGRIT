@@ -134,7 +134,7 @@ def ssw(genomePatchRec, transcriptRecord):
                 hyphen = 'y'
         elif '-' in transcriptAlign:
                 hyphen = 'y'
-        return [transcriptAlign, genomeAlign, hyphen, startIndex, alignment.optimal_alignment_score]
+        return [transcriptAlign, genomeAlign, hyphen, startIndex, alignment.score]
 
 def indel_location(transcriptAlign, genomeAlign, matchStart, model, startIndex, exonIndex, stop_codons):             # This function will check hyphens in the transcript (== deletions in the genome) and hyphens in the genome (== insertion from the transcript).
         # Check if this is likely to be worth bothering
