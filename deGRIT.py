@@ -13,14 +13,17 @@
 # occur and correct these in the genomic sequence, enabling reannotation to occur.
 
 # Load packages
-import re, os, argparse, copy, warnings, shutil
+import re, os, argparse, copy, warnings, shutil, platform
 import pandas as pd
 from Bio import SeqIO
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 from Bio.Alphabet import generic_dna, generic_protein
-from skbio.alignment import StripedSmithWaterman
 from ncls import NCLS
+if platform.system() == 'Windows':
+        import parasail
+else:
+        from skbio.alignment import StripedSmithWaterman
 
 ### Various functions to perform operations throughout the program
 def reverse_comp(seq):
@@ -122,11 +125,18 @@ def patch_seq_extract(match, model):
         return transcriptRecord, genomePatchRec
 
 def ssw(genomePatchRec, transcriptRecord):
-        # Perform SSW with scikit.bio implementation
-        query = StripedSmithWaterman(str(genomePatchRec.seq))
-        alignment = query(str(transcriptRecord.seq))
-        genomeAlign = alignment.aligned_query_sequence
-        transcriptAlign = alignment.aligned_target_sequence
+        if platform.system() == 'Windows':
+                # Perform SSW with parasail implementation
+                profile = parasail.profile_create_sat(str(genomePatchRec.seq), parasail.blosum62)
+                alignment = parasail.sw_trace_striped_profile_sat(profile, str(transcriptRecord.seq), 10, 1)
+                genomeAlign = alignment.traceback.query
+                transcriptAlign = alignment.traceback.ref
+        else:
+                # Perform SSW with scikit.bio implementation
+                query = StripedSmithWaterman(str(genomePatchRec.seq))
+                alignment = query(str(transcriptRecord.seq))
+                genomeAlign = alignment.aligned_query_sequence
+                transcriptAlign = alignment.aligned_target_sequence
         # Figure out where we're starting in the genome with this alignment
         startIndex = str(genomePatchRec.seq).find(genomeAlign.replace('-', ''))
         # Figure out if we need downstream processing to identify an indel
@@ -135,7 +145,10 @@ def ssw(genomePatchRec, transcriptRecord):
                 hyphen = 'y'
         elif '-' in transcriptAlign:
                 hyphen = 'y'
-        return [transcriptAlign, genomeAlign, hyphen, startIndex, alignment.optimal_alignment_score]
+        if platform.system() == 'Windows':
+                return [transcriptAlign, genomeAlign, hyphen, startIndex, alignment.score]
+        else:
+                return [transcriptAlign, genomeAlign, hyphen, startIndex, alignment.optimal_alignment_score]
 
 def indel_location(transcriptAlign, genomeAlign, matchStart, model, startIndex, exonIndex, stop_codons):             # This function will check hyphens in the transcript (== deletions in the genome) and hyphens in the genome (== insertion from the transcript).
         # Check if this is likely to be worth bothering
@@ -447,26 +460,20 @@ def geneblocks_update(geneBlocksDict, model, modelCoords):
         return geneBlocksDict
 
 def gene_overlap_validation(geneBlocks):
-        isoRegex = re.compile(r'.+?\.(\d{1,10}(\.\d{1,10}\.[a-z0-9]+)+|\d{1,10})$') # PASA adds suffixes to gene models to indicate genes and isoforms; this captures that section
-        ggfRegex = re.compile(r'.+?\.(path\d{1,10}|mrna\d{1,10})$')
+        isoRegex = re.compile(r'.+?\.\d{1,10}((\.\d{1,10}\.[a-z0-9]+)+|\.\d{1,10})$') # PASA adds suffixes to gene models to indicate genes and isoforms; this captures that section
         outlist = []
         for key, value in geneBlocks.items():
                 value.sort()
                 for i in range(len(value)-1):
                         if value[i][1] >= value[i+1][0]:
-                                assert '.path' in value[i][2] or '.mrna' in value[i][2] or value[i][2].startswith('evm.model.') # Raise recognisable error if the gene model IDs aren't conformant with our expectations
-                                assert '.path' in value[i+1][2] or '.mrna' in value[i+1][2] or value[i+1][2].startswith('evm.model.')
-                                if isoRegex.match(value[i][2]) != None:
+                                basename1, basename2 = value[i][2], value[i+1][2]
+                                if value[i][2].startswith('evm.model') and isoRegex.match(value[i][2]) != None:
                                         suffix1 = isoRegex.search(value[i][2]).group(1)
-                                else:
-                                        suffix1 = ggfRegex.search(value[i][2]).group(1)
-                                if isoRegex.match(value[i+1][2]) != None:
+                                        basename1 = value[i][2][:len(value[i][2])-len(suffix1)]
+                                if value[i+1][2].startswith('evm.model') and isoRegex.match(value[i+1][2]) != None:
                                         suffix2 = isoRegex.search(value[i+1][2]).group(1)
-                                else:
-                                        suffix2 = ggfRegex.search(value[i+1][2]).group(1)
-                                basename1 = value[i][2][:len(value[i][2])-len(suffix1)-1]
-                                basename2 = value[i+1][2][:len(value[i+1][2])-len(suffix2)+1]
-                                if basename1 != basename2 and value[i][3] == value[i+1][3]:             # i.e., if these aren't isoforms (basenames will be identical if they are) and they are present in the same orientation (field [3] == orientation)
+                                        basename2 = value[i+1][2][:len(value[i+1][2])-len(suffix2)]
+                                if basename1 != basename2 and value[i][3] == value[i+1][3]:             # i.e., if these aren't isoforms (basenames should be identical if they are) and they are present in the same orientation (field [3] == orientation)
                                         outlist.append(value[i][2] + '\t' + value[i+1][2])
         return outlist
 
